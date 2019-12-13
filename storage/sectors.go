@@ -73,7 +73,7 @@ func (m *Miner) sectorStateLoop(ctx context.Context) error {
 	if err != nil {
 		log.Errorf("loading sector list: %+v", err)
 	}
-
+  //首次进入，更新一下
 	go func() {
 		for _, si := range trackedSectors {
 			select {
@@ -117,7 +117,7 @@ func (m *Miner) sectorStateLoop(ctx context.Context) error {
 			log.Warnf("untracked sector %d found on chain", ocs.SectorID)
 		}
 	}
-
+//无限循环，处理 添加和更新扇区
 	go func() {
 		defer log.Warn("quitting deal provider loop")
 		defer close(m.stopped)
