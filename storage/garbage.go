@@ -103,6 +103,9 @@ func (m *Miner) pledgeSector(ctx context.Context, sectorID uint64, existingPiece
 	return out, nil
 }
 
+/**
+模拟生成扇区
+*/
 func (m *Miner) PledgeSector() error {
 	go func() {
 		ctx := context.TODO() // we can't use the context from command which invokes

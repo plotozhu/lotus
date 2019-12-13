@@ -137,6 +137,9 @@ func (m *Miner) sectorStateLoop(ctx context.Context) error {
 	return nil
 }
 
+/**
+有扇区信息进入，sector是一个不完全的SectorInfo信息，SectorID是必须的
+*/
 func (m *Miner) onSectorIncoming(sector *SectorInfo) {
 	has, err := m.sectors.Has(sector.SectorID)
 	if err != nil {
@@ -147,6 +150,7 @@ func (m *Miner) onSectorIncoming(sector *SectorInfo) {
 		return
 	}
 
+	//存入到扇区中
 	if err := m.sectors.Begin(sector.SectorID, sector); err != nil {
 		log.Errorf("sector tracking failed: %s", err)
 		return
@@ -164,9 +168,16 @@ func (m *Miner) onSectorIncoming(sector *SectorInfo) {
 	}()
 }
 
+/**每次扇区状态更新后的动作
+	update 是扇区更新的状态机，这意味着一个miner可以管理多个扇区，因此同样也支持多个seal-worker
+ * 首先是进行变形操作
+ * 然后是根据当前状态进行下一步动作，其就是状态机的状态迁移
+*/
 func (m *Miner) onSectorUpdated(ctx context.Context, update sectorUpdate) {
 	log.Infof("Sector %d updated state to %s", update.id, api.SectorStates[update.newState])
 	var sector SectorInfo
+	//Mutate函数调用cborMutate对第二个参数（此处是func)进行处理，第二个参数需要支持valueOf操作符
+
 	err := m.sectors.Mutate(update.id, func(s *SectorInfo) error {
 		if update.nonce < s.Nonce {
 			return xerrors.Errorf("update nonce too low, ignoring (%d < %d)", update.nonce, s.Nonce)
@@ -184,7 +195,7 @@ func (m *Miner) onSectorUpdated(ctx context.Context, update sectorUpdate) {
 			}
 			s.LastErr += fmt.Sprintf("entering state %s: %+v", api.SectorStates[update.newState], update.err)
 		}
-
+		//根据状态迁移函数的设置，更新updatem内的sectorInfo
 		if update.mut != nil {
 			update.mut(s)
 		}
@@ -302,6 +313,12 @@ func (m *Miner) SealPiece(ctx context.Context, size uint64, r io.Reader, sectorI
 	return m.newSector(ctx, sectorID, dealID, ppi)
 }
 
+/**
+	新创建一个扇区，
+	sid是扇区ID号
+    dealID是交易的ID号
+    ppi是公共信息
+*/
 func (m *Miner) newSector(ctx context.Context, sid uint64, dealID uint64, ppi sectorbuilder.PublicPieceInfo) error {
 	si := &SectorInfo{
 		SectorID: sid,

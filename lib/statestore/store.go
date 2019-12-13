@@ -33,6 +33,11 @@ func toKey(k interface{}) datastore.Key {
 	}
 }
 
+/**
+进行存储一个扇区
+i是扇区的标志
+state是一个可以被cborutil.Dump读取数据的流式接口
+*/
 func (st *StateStore) Begin(i interface{}, state interface{}) error {
 	k := toKey(i)
 	has, err := st.ds.Has(k)
@@ -51,6 +56,9 @@ func (st *StateStore) Begin(i interface{}, state interface{}) error {
 	return st.ds.Put(k, b)
 }
 
+/**
+结束某个扇区的存储， i是扇区的标志
+*/
 func (st *StateStore) End(i interface{}) error {
 	k := toKey(i)
 	has, err := st.ds.Has(k)
@@ -63,6 +71,10 @@ func (st *StateStore) End(i interface{}) error {
 	return st.ds.Delete(k)
 }
 
+/**
+cbor变形，返回一个从[]byte到[]byte的函数
+	其实是使用cborutil实现从mutator接口里读取数据
+*/
 func cborMutator(mutator interface{}) func([]byte) ([]byte, error) {
 	rmut := reflect.ValueOf(mutator)
 
@@ -85,12 +97,15 @@ func cborMutator(mutator interface{}) func([]byte) ([]byte, error) {
 }
 
 // mutator func(*T) error
-//公开的变形函数，使用cborMutator
+//公开的变形函数，使用cborMutator，将mutator接口对应的数据编码
 func (st *StateStore) Mutate(i interface{}, mutator interface{}) error {
 	return st.mutate(i, cborMutator(mutator))
 }
 
-//变形函数，对st中的键值i对应的值使用mutator函数进行变形后，重新存入到st的数据库里
+/**
+变形函数，对st中的键值i对应的值使用mutator函数进行变形后，重新存入到st的数据库里
+mutate中的第二个参数是实际的变形函数，将输入的一个byte数组修改成另外一个byte数组，就是上面的cborMutator函数
+*/
 func (st *StateStore) mutate(i interface{}, mutator func([]byte) ([]byte, error)) error {
 	k := toKey(i)
 	has, err := st.ds.Has(k)

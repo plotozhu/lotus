@@ -40,8 +40,8 @@ type Miner struct {
 	sectors *statestore.StateStore
 	tktFn   TicketFn
 
-	sectorIncoming chan *SectorInfo
-	sectorUpdated  chan sectorUpdate
+	sectorIncoming chan *SectorInfo  //有新扇区请求的通道
+	sectorUpdated  chan sectorUpdate //扇区信息被更新了
 	stop           chan struct{}
 	stopped        chan struct{}
 }
