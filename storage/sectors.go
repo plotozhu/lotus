@@ -15,6 +15,9 @@ import (
 
 const NonceIncrement = math.MaxUint64
 
+/**
+sectorUpdate是通用的状态机
+*/
 type sectorUpdate struct {
 	newState api.SectorState
 	id       uint64
@@ -34,11 +37,13 @@ func (u *sectorUpdate) error(err error) *sectorUpdate {
 	return u
 }
 
+//设置状态更新处理函数，这个是状态更新后会被调用的，其实是进入函数
 func (u *sectorUpdate) state(m func(*SectorInfo)) *sectorUpdate {
 	u.mut = m
 	return u
 }
 
+//状态转移
 func (u *sectorUpdate) to(newState api.SectorState) *sectorUpdate {
 	u.newState = newState
 	return u
@@ -49,6 +54,7 @@ func (u *sectorUpdate) setNonce(nc uint64) *sectorUpdate {
 	return u
 }
 
+//对矿工内的状态机进行状态转移
 func (m *Miner) UpdateSectorState(ctx context.Context, sector uint64, snonce uint64, state api.SectorState) error {
 	select {
 	case m.sectorUpdated <- sectorUpdate{

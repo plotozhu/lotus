@@ -85,10 +85,12 @@ func cborMutator(mutator interface{}) func([]byte) ([]byte, error) {
 }
 
 // mutator func(*T) error
+//公开的变形函数，使用cborMutator
 func (st *StateStore) Mutate(i interface{}, mutator interface{}) error {
 	return st.mutate(i, cborMutator(mutator))
 }
 
+//变形函数，对st中的键值i对应的值使用mutator函数进行变形后，重新存入到st的数据库里
 func (st *StateStore) mutate(i interface{}, mutator func([]byte) ([]byte, error)) error {
 	k := toKey(i)
 	has, err := st.ds.Has(k)
