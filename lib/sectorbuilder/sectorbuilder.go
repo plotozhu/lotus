@@ -141,7 +141,7 @@ type Config struct {
 	UnsealedDir string
 	_           struct{} // guard against nameless init
 }
-
+//创建，cfgshi配置文件，ds是元数据存储的数据库
 func New(cfg *Config, ds dtypes.MetadataDS) (*SectorBuilder, error) {
 	if cfg.WorkerThreads < PoStReservedWorkers {
 		return nil, xerrors.Errorf("minimum worker threads is %d, specified %d", PoStReservedWorkers, cfg.WorkerThreads)
@@ -207,6 +207,8 @@ func New(cfg *Config, ds dtypes.MetadataDS) (*SectorBuilder, error) {
 
 	return sb, nil
 }
+        //不使用ds创建，要么远程工作线程？
+    
 
 func NewStandalone(cfg *Config) (*SectorBuilder, error) {
 	for _, dir := range []string{cfg.StagedDir, cfg.SealedDir, cfg.CacheDir, cfg.UnsealedDir} {
@@ -290,13 +292,13 @@ func (sb *SectorBuilder) WorkerStats() WorkerStats {
 		UnsealWait:    int(atomic.LoadInt32(&sb.unsealWait)),
 	}
 }
-
+//a.payload是什么鬼？居然就是proverId，这个命名……
 func addressToProverID(a address.Address) [32]byte {
 	var proverId [32]byte
 	copy(proverId[:], a.Payload())
 	return proverId
 }
-
+//自增方式生成id
 func (sb *SectorBuilder) AcquireSectorId() (uint64, error) {
 	sb.idLk.Lock()
 	defer sb.idLk.Unlock()
@@ -310,6 +312,7 @@ func (sb *SectorBuilder) AcquireSectorId() (uint64, error) {
 	}
 	return id, nil
 }
+//添加一个片断，TODO:片断和扇区什么关系？
 
 func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Reader, existingPieceSizes []uint64) (PublicPieceInfo, error) {
 	atomic.AddInt32(&sb.addPieceWait, 1)
@@ -321,12 +324,13 @@ func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Rea
 	if err != nil {
 		return PublicPieceInfo{}, err
 	}
-
+//从这里看，一个扇区用一个文件的方式存储
 	stagedFile, err := sb.stagedSectorFile(sectorId)
 	if err != nil {
 		return PublicPieceInfo{}, err
 	}
 
+        //以对齐的方式写入数据，返回commP,这个commP中包含什么信息？
 	_, _, commP, err := sectorbuilder.WriteWithAlignment(f, pieceSize, stagedFile, existingPieceSizes)
 	if err != nil {
 		return PublicPieceInfo{}, err

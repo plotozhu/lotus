@@ -32,7 +32,7 @@ type workerCall struct {
 	task WorkerTask
 	ret  chan SealRes
 }
-
+//添加一个worker，返回可以向这个worker发送命令的通道
 func (sb *SectorBuilder) AddWorker(ctx context.Context, cfg WorkerCfg) (<-chan WorkerTask, error) {
 	sb.remoteLk.Lock()
 	defer sb.remoteLk.Unlock()
@@ -50,6 +50,8 @@ func (sb *SectorBuilder) AddWorker(ctx context.Context, cfg WorkerCfg) (<-chan W
 
 	return taskCh, nil
 }
+
+ //
 
 func (sb *SectorBuilder) returnTask(task workerCall) {
 	var ret chan workerCall
@@ -112,10 +114,10 @@ func (sb *SectorBuilder) remoteWorker(ctx context.Context, r *remote, cfg Worker
 		r.lk.Unlock()
 	}
 }
-
+//这段代码写的，只能用这个类名来形容了
 func (sb *SectorBuilder) doTask(ctx context.Context, r *remote, task workerCall) {
 	resCh := make(chan SealRes)
-
+   //居然记录的是taskid对应的通道而不是r对象
 	sb.remoteLk.Lock()
 	sb.remoteResults[task.task.TaskID] = resCh
 	sb.remoteLk.Unlock()
@@ -152,7 +154,7 @@ func (sb *SectorBuilder) doTask(ctx context.Context, r *remote, task workerCall)
 		return
 	}
 }
-
+//任务完成了，通过这个来通知
 func (sb *SectorBuilder) TaskDone(ctx context.Context, task uint64, res SealRes) error {
 	sb.remoteLk.Lock()
 	rres, ok := sb.remoteResults[task]
