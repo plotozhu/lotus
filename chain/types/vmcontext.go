@@ -1,16 +1,18 @@
 package types
 
 import (
-	"context"
-
 	"github.com/filecoin-project/go-amt-ipld"
 	"github.com/filecoin-project/lotus/chain/actors/aerrors"
 	"github.com/filecoin-project/lotus/chain/address"
-	cid "github.com/ipfs/go-cid"
-	hamt "github.com/ipfs/go-hamt-ipld"
+	"github.com/ipfs/go-cid"
+	"github.com/ipfs/go-hamt-ipld"
 	cbg "github.com/whyrusleeping/cbor-gen"
 )
 
+/**
+	存储系统
+
+ */
 type Storage interface {
 	Put(cbg.CBORMarshaler) (cid.Cid, aerrors.ActorError)
 	Get(cid.Cid, cbg.CBORUnmarshaler) aerrors.ActorError
@@ -21,12 +23,16 @@ type Storage interface {
 	// state matches 'oldh'
 	Commit(oldh cid.Cid, newh cid.Cid) aerrors.ActorError
 }
-
+/**
+	状态树
+ */
 type StateTree interface {
-	SetActor(addr address.Address, act *Actor) error
+	SetActor(addr address.Address, ac*Actor) error
 	GetActor(addr address.Address) (*Actor, error)
 }
-
+/***
+	这是最基础的虚拟机的上下文 
+ */
 type VMContext interface {
 	Message() *Message
 	Origin() address.Address

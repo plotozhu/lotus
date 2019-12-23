@@ -12,8 +12,8 @@ import (
 const SignatureMaxLength = 200
 
 const (
-	KTSecp256k1 = "secp256k1"
-	KTBLS       = "bls"
+	KTSecp256k1 = "secp256k1" //secp签名
+	KTBLS       = "bls"    //BLS聚合签名
 )
 
 const (

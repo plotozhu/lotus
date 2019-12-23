@@ -28,7 +28,9 @@ func (m *Miner) handleSectorUpdate(ctx context.Context, sector SectorInfo, cb pr
 		}
 	}()
 }
-
+/**
+	有未封包的扇区数据在SectorInfo里，handlePacking将
+ */
 func (m *Miner) handlePacking(ctx context.Context, sector SectorInfo) *sectorUpdate {
 	log.Infow("performing filling up rest of the sector...", "sector", sector.SectorID)
 
@@ -43,6 +45,7 @@ func (m *Miner) handlePacking(ctx context.Context, sector SectorInfo) *sectorUpd
 		return sector.upd().fatal(xerrors.Errorf("too much data in sector: %d > %d", allocated, ubytes))
 	}
 
+	//fillers From Remaining
 	fillerSizes, err := fillersFromRem(ubytes - allocated)
 	if err != nil {
 		return sector.upd().fatal(err)
@@ -51,17 +54,21 @@ func (m *Miner) handlePacking(ctx context.Context, sector SectorInfo) *sectorUpd
 	if len(fillerSizes) > 0 {
 		log.Warnf("Creating %d filler pieces for sector %d", len(fillerSizes), sector.SectorID)
 	}
-
+	//此处调用  pledgeSector将扇区填满
 	pieces, err := m.pledgeSector(ctx, sector.SectorID, sector.existingPieces(), fillerSizes...)
 	if err != nil {
 		return sector.upd().fatal(xerrors.Errorf("filling up the sector (%v): %w", fillerSizes, err))
 	}
 
+	//数据填充完毕后，扇区的状态转换到了Unsealed状态
 	return sector.upd().to(api.Unsealed).state(func(info *SectorInfo) {
 		info.Pieces = append(info.Pieces, pieces...)
 	})
 }
+/**
+	handleUnsealed执行封包动作，处理已经填充完毕的扇区区数据
 
+ */
 func (m *Miner) handleUnsealed(ctx context.Context, sector SectorInfo) *sectorUpdate {
 	log.Infow("performing sector replication...", "sector", sector.SectorID)
 	ticket, err := m.tktFn(ctx)

@@ -1,21 +1,22 @@
 package vm
-
+/*****
+	这个是虚拟机的实现
+ */
 import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/big"
-
+	"github.com/filecoin-project/lotus/build"
 	block "github.com/ipfs/go-block-format"
-	cid "github.com/ipfs/go-cid"
-	hamt "github.com/ipfs/go-hamt-ipld"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
+	"github.com/ipfs/go-cid"
+	"github.com/ipfs/go-hamt-ipld"
+	"github.com/ipfs/go-ipfs-blockstore"
 	logging "github.com/ipfs/go-log"
 	cbg "github.com/whyrusleeping/cbor-gen"
 	"go.opencensus.io/trace"
 	"golang.org/x/xerrors"
+	"math/big"
 
-	"github.com/filecoin-project/lotus/build"
 	"github.com/filecoin-project/lotus/chain/actors"
 	"github.com/filecoin-project/lotus/chain/actors/aerrors"
 	"github.com/filecoin-project/lotus/chain/address"
@@ -60,7 +61,7 @@ type VMContext struct {
 	sroot cid.Cid
 
 	// address that started invoke chain
-	origin address.Address
+	origin address.Address  //这个应该就是coinbase
 }
 
 // Message is the message that kicked off the current invocation
@@ -344,7 +345,9 @@ type ApplyRet struct {
 	types.MessageReceipt
 	ActorErr aerrors.ActorError
 }
-
+/**
+    虚拟机执行状态命令,所有的命令都是消息格式
+ */
 func (vm *VM) send(ctx context.Context, msg *types.Message, parent *VMContext,
 	gasCharge uint64) ([]byte, aerrors.ActorError, *VMContext) {
 
@@ -354,6 +357,8 @@ func (vm *VM) send(ctx context.Context, msg *types.Message, parent *VMContext,
 		return nil, aerrors.Absorb(err, 1, "could not find source actor"), nil
 	}
 
+	// 接收者帐户地址，如果接收者还没有，将尝试着在本地创建一个
+	// 创建后，该帐户地址总是为0
 	toActor, err := st.GetActor(msg.To)
 	if err != nil {
 		if xerrors.Is(err, types.ErrActorNotFound) {
@@ -367,6 +372,7 @@ func (vm *VM) send(ctx context.Context, msg *types.Message, parent *VMContext,
 		}
 	}
 
+	//计算gas
 	gasUsed := types.NewInt(gasCharge)
 	origin := msg.From
 	if parent != nil {
@@ -380,6 +386,7 @@ func (vm *VM) send(ctx context.Context, msg *types.Message, parent *VMContext,
 		}()
 	}
 
+	//费用转移
 	if types.BigCmp(msg.Value, types.NewInt(0)) != 0 {
 		if aerr := vmctx.ChargeGas(gasFundTransfer); aerr != nil {
 			return nil, aerrors.Wrap(aerr, "sending funds"), nil
@@ -390,8 +397,10 @@ func (vm *VM) send(ctx context.Context, msg *types.Message, parent *VMContext,
 		}
 	}
 
+	//执行方法
 	if msg.Method != 0 {
 		ret, err := vm.Invoke(toActor, vmctx, msg.Method, msg.Params)
+		//方法执行完毕后，更新toActor的状态树
 		if !aerrors.IsFatal(err) {
 			toActor.Head = vmctx.Storage().GetHead()
 		}
@@ -417,6 +426,9 @@ func checkMessage(msg *types.Message) error {
 	return nil
 }
 
+/**
+	根据消息执行，并且生成一个收据
+*/
 func (vm *VM) ApplyMessage(ctx context.Context, msg *types.Message) (*ApplyRet, error) {
 	ctx, span := trace.StartSpan(ctx, "vm.ApplyMessage")
 	defer span.End()
@@ -446,6 +458,7 @@ func (vm *VM) ApplyMessage(ctx context.Context, msg *types.Message) (*ApplyRet, 
 	if err != nil {
 		return nil, xerrors.Errorf("could not serialize message: %w", err)
 	}
+	//消息的每个字节都要计算费用
 	msgGasCost := uint64(len(serMsg)) * gasPerMessageByte
 
 	gascost := types.BigMul(msg.GasLimit, msg.GasPrice)
@@ -454,6 +467,7 @@ func (vm *VM) ApplyMessage(ctx context.Context, msg *types.Message) (*ApplyRet, 
 		return nil, xerrors.Errorf("not enough funds (%s < %s)", fromActor.Balance, totalCost)
 	}
 
+	//gasHolder是临时使用的用来计算gas的actor
 	gasHolder := &types.Actor{Balance: types.NewInt(0)}
 	if err := Transfer(fromActor, gasHolder, gascost); err != nil {
 		return nil, xerrors.Errorf("failed to withdraw gas funds: %w", err)
@@ -529,7 +543,9 @@ func (vm *VM) ActorBalance(addr address.Address) (types.BigInt, aerrors.ActorErr
 
 	return act.Balance, nil
 }
-
+/**
+	根据所有变化的actor，生成一个最终的结果的root
+ */
 func (vm *VM) Flush(ctx context.Context) (cid.Cid, error) {
 	_, span := trace.StartSpan(ctx, "vm.Flush")
 	defer span.End()
@@ -542,6 +558,8 @@ func (vm *VM) Flush(ctx context.Context) (cid.Cid, error) {
 		return cid.Undef, xerrors.Errorf("flushing vm: %w", err)
 	}
 
+	//QZ TODO
+	// 此处的from/to都是来自于vm.buf,为什么需要再复制一次？
 	if err := Copy(from, to, root); err != nil {
 		return cid.Undef, xerrors.Errorf("copying tree: %w", err)
 	}
@@ -632,6 +650,12 @@ func (vm *VM) SetBlockHeight(h uint64) {
 	vm.blockHeight = h
 }
 
+/**
+	这个是实际的调用函数，是在前面所有本机可以获取的gas之类的计算完毕后获得的
+    actor: 是执行这个invoke的操作对象，即message中的to对象，
+   method：是方法
+	param是编码后的参数
+ */
 func (vm *VM) Invoke(act *types.Actor, vmctx *VMContext, method uint64, params []byte) ([]byte, aerrors.ActorError) {
 	ctx, span := trace.StartSpan(vmctx.ctx, "vm.Invoke")
 	defer span.End()
@@ -657,7 +681,10 @@ func (vm *VM) Invoke(act *types.Actor, vmctx *VMContext, method uint64, params [
 	}
 	return ret, nil
 }
-
+/***
+	from 向to 转移amt（amount)个代币，在from中减去，在to中加上，
+	实际上运行前需要检查是否余额是否足够，如果余额不足，直接离开
+ */
 func Transfer(from, to *types.Actor, amt types.BigInt) error {
 	if from == to {
 		return nil
@@ -673,7 +700,9 @@ func Transfer(from, to *types.Actor, amt types.BigInt) error {
 	depositFunds(to, amt)
 	return nil
 }
-
+/**
+	从act中扣款
+ */
 func deductFunds(act *types.Actor, amt types.BigInt) error {
 	if act.Balance.LessThan(amt) {
 		return fmt.Errorf("not enough funds")
@@ -682,7 +711,9 @@ func deductFunds(act *types.Actor, amt types.BigInt) error {
 	act.Balance = types.BigSub(act.Balance, amt)
 	return nil
 }
-
+/**
+	向actor的余额中加款
+ */
 func depositFunds(act *types.Actor, amt types.BigInt) {
 	act.Balance = types.BigAdd(act.Balance, amt)
 }
@@ -690,6 +721,10 @@ func depositFunds(act *types.Actor, amt types.BigInt) {
 var miningRewardTotal = types.FromFil(build.MiningRewardTotal)
 var blocksPerEpoch = types.NewInt(build.BlocksPerEpoch)
 
+/**
+	挖矿奖励
+	TODO 需要研究下计算公式的来源
+ */
 // MiningReward returns correct mining reward
 //   coffer is amount of FIL in NetworkAddress
 func MiningReward(remainingReward types.BigInt) types.BigInt {

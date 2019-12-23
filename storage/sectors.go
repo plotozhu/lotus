@@ -138,7 +138,7 @@ func (m *Miner) sectorStateLoop(ctx context.Context) error {
 }
 
 /**
-有扇区信息进入，sector是一个不完全的SectorInfo信息，SectorID是必须的
+	有扇区信息进入，sector是一个不完全的SectorInfo信息，SectorID是必须的
 */
 func (m *Miner) onSectorIncoming(sector *SectorInfo) {
 	has, err := m.sectors.Has(sector.SectorID)
@@ -302,6 +302,10 @@ func (m *Miner) AllocatePiece(size uint64) (sectorID uint64, offset uint64, err 
 	return sid, 0, nil
 }
 
+/**
+		将一个dealId对应的数据封包到 sectorID对应在的扇区里，r是根据 dealId读取数据的读取器
+		//AddPiece函数数据数据存入到了staged目录里
+  */
 func (m *Miner) SealPiece(ctx context.Context, size uint64, r io.Reader, sectorID uint64, dealID uint64) error {
 	log.Infof("Seal piece for deal %d", dealID)
 
@@ -321,14 +325,14 @@ func (m *Miner) SealPiece(ctx context.Context, size uint64, r io.Reader, sectorI
 */
 func (m *Miner) newSector(ctx context.Context, sid uint64, dealID uint64, ppi sectorbuilder.PublicPieceInfo) error {
 	si := &SectorInfo{
-		SectorID: sid,
+		SectorID: sid,  //扇区号
 
-		Pieces: []Piece{
+		Pieces: []Piece{ //扇区内的片断信息
 			{
-				DealID: dealID,
+				DealID: dealID, //交易的ic号
 
-				Size:  ppi.Size,
-				CommP: ppi.CommP[:],
+				Size:  ppi.Size,   //这个片断的大小
+				CommP: ppi.CommP[:], //这个片断的默克尔根
 			},
 		},
 	}

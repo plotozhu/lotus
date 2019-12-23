@@ -19,7 +19,9 @@ type invoker struct {
 	builtInCode  map[cid.Cid]nativeCode
 	builtInState map[cid.Cid]reflect.Type
 }
-
+/**
+	函数指针表原原型
+ */
 type invokeFunc func(act *types.Actor, vmctx types.VMContext, params []byte) ([]byte, aerrors.ActorError)
 type nativeCode []invokeFunc
 
@@ -29,6 +31,7 @@ func newInvoker() *invoker {
 		builtInState: make(map[cid.Cid]reflect.Type),
 	}
 
+	//注册每个方法的actor
 	// add builtInCode using: register(cid, singleton)
 	inv.register(actors.InitCodeCid, actors.InitActor{}, actors.InitActorState{})
 	inv.register(actors.CronCodeCid, actors.CronActor{}, actors.CronActorState{})
@@ -41,6 +44,10 @@ func newInvoker() *invoker {
 	return inv
 }
 
+/**
+	Invoker 根据预定义的method来执行
+	此函数先看看是不是内置的函数，如果是，就执行内置的，
+ */
 func (inv *invoker) Invoke(act *types.Actor, vmctx types.VMContext, method uint64, params []byte) ([]byte, aerrors.ActorError) {
 
 	if act.Code == actors.AccountCodeCid {

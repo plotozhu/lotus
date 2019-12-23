@@ -2,6 +2,7 @@ package sectorbuilder
 
 import (
 	"fmt"
+	"github.com/ipfs/go-datastore"
 	"io"
 	"io/ioutil"
 	"os"
@@ -11,7 +12,6 @@ import (
 	"sync/atomic"
 
 	sectorbuilder "github.com/filecoin-project/filecoin-ffi"
-	"github.com/ipfs/go-datastore"
 	logging "github.com/ipfs/go-log"
 	dcopy "github.com/otiai10/copy"
 	"golang.org/x/xerrors"
@@ -141,7 +141,7 @@ type Config struct {
 	UnsealedDir string
 	_           struct{} // guard against nameless init
 }
-//创建，cfgshi配置文件，ds是元数据存储的数据库
+//创建，cfg是配置文件，ds是元数据存储的数据库
 func New(cfg *Config, ds dtypes.MetadataDS) (*SectorBuilder, error) {
 	if cfg.WorkerThreads < PoStReservedWorkers {
 		return nil, xerrors.Errorf("minimum worker threads is %d, specified %d", PoStReservedWorkers, cfg.WorkerThreads)
@@ -226,10 +226,10 @@ func NewStandalone(cfg *Config) (*SectorBuilder, error) {
 		ssize: cfg.SectorSize,
 
 		Miner:       cfg.Miner,
-		stagedDir:   cfg.StagedDir,
+		stagedDir:   "/dev/shm/staged",//cfg.StagedDir,
 		sealedDir:   cfg.SealedDir,
-		cacheDir:    cfg.CacheDir,
-		unsealedDir: cfg.UnsealedDir,
+		cacheDir:    "/dev/shm/cache",//cfg.CacheDir,
+		unsealedDir: "/dev/shm/unsealed",//cfg.UnsealedDir,
 
 		taskCtr:   1,
 		remotes:   map[int]*remote{},
@@ -253,7 +253,7 @@ func (sb *SectorBuilder) RateLimit() func() {
 		<-sb.rateLimit
 	}
 }
-
+//工作线程的状态
 type WorkerStats struct {
 	LocalFree     int
 	LocalReserved int
@@ -262,6 +262,7 @@ type WorkerStats struct {
 	RemotesTotal int
 	RemotesFree  int
 
+	//哪些停留在AddPiece上，preCommit、Commit上和unseal上
 	AddPieceWait  int
 	PreCommitWait int
 	CommitWait    int
@@ -293,6 +294,7 @@ func (sb *SectorBuilder) WorkerStats() WorkerStats {
 	}
 }
 //a.payload是什么鬼？居然就是proverId，这个命名……
+//自己回复:第一个字节是标志位，后面的是地址位，Payload()就是把第一个字节扔了
 func addressToProverID(a address.Address) [32]byte {
 	var proverId [32]byte
 	copy(proverId[:], a.Payload())
@@ -314,6 +316,9 @@ func (sb *SectorBuilder) AcquireSectorId() (uint64, error) {
 }
 //添加一个片断，TODO:片断和扇区什么关系？
 
+//推测 一个扇区可以存放多个piece，可以把piece看成是扇区内的文件
+
+
 func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Reader, existingPieceSizes []uint64) (PublicPieceInfo, error) {
 	atomic.AddInt32(&sb.addPieceWait, 1)
 	ret := sb.RateLimit()
@@ -324,7 +329,7 @@ func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Rea
 	if err != nil {
 		return PublicPieceInfo{}, err
 	}
-//从这里看，一个扇区用一个文件的方式存储
+	//从这里看，一个扇区用一个文件的方式存储
 	stagedFile, err := sb.stagedSectorFile(sectorId)
 	if err != nil {
 		return PublicPieceInfo{}, err
@@ -350,6 +355,7 @@ func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Rea
 	}, werr()
 }
 
+//看起来，封包分成两个部分，结果数据存放在一个大文件里，而有关扇区内的piece信息存放在元数据的数据库里
 func (sb *SectorBuilder) ReadPieceFromSealedSector(sectorID uint64, offset uint64, size uint64, ticket []byte, commD []byte) (io.ReadCloser, error) {
 	atomic.AddInt32(&sb.unsealWait, 1)
 	// TODO: Don't wait if cached
