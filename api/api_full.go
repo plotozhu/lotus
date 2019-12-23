@@ -35,6 +35,7 @@ type FullNode interface {
 	ChainSetHead(context.Context, *types.TipSet) error
 	ChainGetGenesis(context.Context) (*types.TipSet, error)
 	ChainTipSetWeight(context.Context, *types.TipSet) (types.BigInt, error)
+	ChainGetNode(ctx context.Context, p string) (interface{}, error)
 
 	// syncer
 	SyncState(context.Context) (*SyncState, error)
@@ -73,7 +74,7 @@ type FullNode interface {
 
 	// ClientImport imports file under the specified path into filestore
 	ClientImport(ctx context.Context, path string) (cid.Cid, error)
-	ClientStartDeal(ctx context.Context, data cid.Cid, miner address.Address, epochPrice types.BigInt, blocksDuration uint64) (*cid.Cid, error)
+	ClientStartDeal(ctx context.Context, data cid.Cid, addr address.Address, miner address.Address, epochPrice types.BigInt, blocksDuration uint64) (*cid.Cid, error)
 	ClientGetDealInfo(context.Context, cid.Cid) (*DealInfo, error)
 	ClientListDeals(ctx context.Context) ([]DealInfo, error)
 	ClientHasLocal(ctx context.Context, root cid.Cid) (bool, error)
