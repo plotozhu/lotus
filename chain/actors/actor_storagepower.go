@@ -300,14 +300,12 @@ func (spa StoragePowerActor) UpdateStorage(act *types.Actor, vmctx types.VMConte
 		return nil, aerrors.New(1, "update storage must only be called by a miner actor")
 	}
 
-	//增加总存储量
 	self.TotalStorage = types.BigAdd(self.TotalStorage, params.Delta)
 
-	//QZ TODO 又增加了bucket的概念，似乎是用于slash的
-	previousBucket := params.PreviousProvingPeriodEnd % build.SlashablePowerDelay
-	nextBucket := params.NextProvingPeriodEnd % build.SlashablePowerDelay
+	previousBucket := params.PreviousSlashDeadline % build.SlashablePowerDelay
+	nextBucket := params.NextSlashDeadline % build.SlashablePowerDelay
 
-	if previousBucket == nextBucket && params.PreviousProvingPeriodEnd != 0 {
+	if previousBucket == nextBucket && params.PreviousSlashDeadline != 0 {
 		nroot, err := vmctx.Storage().Put(&self)
 		if err != nil {
 			return nil, err
