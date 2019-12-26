@@ -41,7 +41,9 @@ func (a *PaychAPI) PaychGet(ctx context.Context, from, to address.Address, ensur
 func (a *PaychAPI) PaychAllocateLane(ctx context.Context, ch address.Address) (uint64, error) {
 	return a.PaychMgr.AllocateLane(ch)
 }
-
+/**
+	新的支付
+ */
 func (a *PaychAPI) PaychNewPayment(ctx context.Context, from, to address.Address, vouchers []api.VoucherSpec) (*api.PaymentInfo, error) {
 	amount := vouchers[len(vouchers)-1].Amount
 

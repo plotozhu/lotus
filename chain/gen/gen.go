@@ -474,23 +474,32 @@ type ProofInput struct {
 	winners []sectorbuilder.EPostCandidate
 	vrfout  []byte
 }
-
+/**
+	本轮的获胜者计算
+	1. 通过ts计算得到一个随机数
+	2. 获得ts的矿工
+    3. 通过此矿工获得vrf随机数
+    4. 通过vrf随机数结果，选出某几个候选扇区
+ */
 func IsRoundWinner(ctx context.Context, ts *types.TipSet, round int64, miner address.Address, epp ElectionPoStProver, a MiningCheckAPI) (*ProofInput, error) {
 	r, err := a.ChainGetRandomness(ctx, ts.Key(), round-build.EcRandomnessLookback)
 	if err != nil {
 		return nil, xerrors.Errorf("chain get randomness: %w", err)
 	}
 
+	//mworker是指ts对应的worker
 	mworker, err := a.StateMinerWorker(ctx, miner, ts)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get miner worker: %w", err)
 	}
 
+	//miner是自己
 	vrfout, err := ComputeVRF(ctx, a.WalletSign, mworker, miner, DSepElectionPost, r)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to compute VRF: %w", err)
 	}
 
+	//计算得到当前已经在proving的扇区
 	pset, err := a.StateMinerProvingSet(ctx, miner, ts)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to load proving set for miner: %w", err)
@@ -508,13 +517,17 @@ func IsRoundWinner(ctx context.Context, ts *types.TipSet, round int64, miner add
 			CommR:    commRa,
 		})
 	}
+	//生成排序好的扇区
 	sectors := sectorbuilder.NewSortedPublicSectorInfo(sinfos)
 
+
 	hvrf := sha256.Sum256(vrfout)
+	//选择某几个符合条件的候选扇区
 	candidates, err := epp.GenerateCandidates(ctx, sectors, hvrf[:])
 	if err != nil {
 		return nil, xerrors.Errorf("failed to generate electionPoSt candidates: %w", err)
 	}
+
 
 	pow, err := a.StateMinerPower(ctx, miner, ts)
 	if err != nil {

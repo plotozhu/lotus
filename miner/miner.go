@@ -145,6 +145,7 @@ eventLoop:
 		addrs := m.addresses
 		m.lk.Unlock()
 
+		//找到一个最好的可能出块的地址、帐户
 		prebase, err := m.GetBestMiningCandidate(ctx)
 		if err != nil {
 			log.Errorf("failed to get best mining candidate: %s", err)
@@ -152,6 +153,7 @@ eventLoop:
 			continue
 		}
 
+		//等待延时的区块到达
 		// Wait until propagation delay period after block we plan to mine on
 		if err := m.waitFunc(ctx, prebase.ts.MinTimestamp()); err != nil {
 			log.Error(err)
@@ -170,6 +172,7 @@ eventLoop:
 		}
 		lastBase = *base
 
+		
 		blks := make([]*types.BlockMsg, 0)
 
 		for _, addr := range addrs {
@@ -217,7 +220,9 @@ type MiningBase struct {
 	ts         *types.TipSet
 	nullRounds uint64
 }
-
+/**
+    从当前的最新区块中找到最合适的ticketset和对应的base
+ */
 func (m *Miner) GetBestMiningCandidate(ctx context.Context) (*MiningBase, error) {
 	bts, err := m.api.ChainHead(ctx)
 	if err != nil {
@@ -256,6 +261,9 @@ func (m *Miner) hasPower(ctx context.Context, addr address.Address, ts *types.Ti
 	return !power.MinerPower.Equals(types.NewInt(0)), nil
 }
 
+/**
+	挖一个区块
+ */
 func (m *Miner) mineOne(ctx context.Context, addr address.Address, base *MiningBase) (*types.BlockMsg, error) {
 	log.Debugw("attempting to mine a block", "tipset", types.LogCids(base.ts.Cids()))
 	start := time.Now()
@@ -356,7 +364,10 @@ func (m *Miner) computeTicket(ctx context.Context, addr address.Address, base *M
 		VRFProof: vrfOut,
 	}, nil
 }
+/***
+	创建区块
 
+ */
 func (m *Miner) createBlock(base *MiningBase, addr address.Address, ticket *types.Ticket, proof *types.EPostProof, pending []*types.SignedMessage) (*types.BlockMsg, error) {
 	msgs, err := selectMessages(context.TODO(), m.api.StateGetActor, base, pending)
 	if err != nil {

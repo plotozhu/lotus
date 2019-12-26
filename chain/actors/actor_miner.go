@@ -234,6 +234,7 @@ func (sma StorageMinerActor) StorageMinerConstructor(act *types.Actor, vmctx typ
 
 	return nil, nil
 }
+//收到preCommitSector的命令，为什么没有验证？
 
 func (sma StorageMinerActor) PreCommitSector(act *types.Actor, vmctx types.VMContext, params *SectorPreCommitInfo) ([]byte, ActorError) {
 	ctx := vmctx.Context()
@@ -282,6 +283,8 @@ func (sma StorageMinerActor) PreCommitSector(act *types.Actor, vmctx types.VMCon
 		ReceivedEpoch: vmctx.BlockHeight(),
 	}
 
+	//QZ TODO
+	// Precommit没有验证，因此可以拼命向链上发导致链上的PreCommittedSectors存满，系统无法接收其他的命令PreCommittedSectors
 	if len(self.PreCommittedSectors) > 4096 {
 		return nil, aerrors.New(5, "too many precommitted sectors")
 	}
@@ -308,7 +311,9 @@ type SectorProveCommitInfo struct {
 	SectorID uint64
 	DealIDs  []uint64
 }
-
+/***
+	这个应该是commit提交之后的验证
+ */
 func (sma StorageMinerActor) ProveCommitSectorV0(act *types.Actor, vmctx types.VMContext, params *SectorProveCommitInfo) ([]byte, ActorError) {
 	ctx := vmctx.Context()
 	oldstate, self, err := loadState(vmctx)
@@ -411,7 +416,9 @@ func (sma StorageMinerActor) ProveCommitSectorV0(act *types.Actor, vmctx types.V
 	_, err = vmctx.Send(StorageMarketAddress, SMAMethods.ActivateStorageDeals, types.NewInt(0), activateParams)
 	return nil, aerrors.Wrapf(err, "calling ActivateStorageDeals failed")
 }
-
+/***
+	其实是ProCommit的证明过程
+ */
 func (sma StorageMinerActor) ProveCommitSectorV1(act *types.Actor, vmctx types.VMContext, params *SectorProveCommitInfo) ([]byte, ActorError) {
 	ctx := vmctx.Context()
 	oldstate, self, err := loadState(vmctx)
@@ -428,6 +435,7 @@ func (sma StorageMinerActor) ProveCommitSectorV1(act *types.Actor, vmctx types.V
 		return nil, aerrors.New(1, "not authorized to submit sector proof for miner")
 	}
 
+	//us 是记录的PreCommitted的数据
 	us, ok := self.PreCommittedSectors[uintToStringKey(params.SectorID)]
 	if !ok {
 		return nil, aerrors.New(1, "no pre-commitment found for sector")
