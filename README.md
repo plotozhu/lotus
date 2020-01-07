@@ -70,31 +70,22 @@ evaluating:
 
 >failure percent for vote  when  packet loss ranges fromm 0% to  20% of on hop
 
+
+
+
 ### Phase 5
 
 preset: 
 1. blocksize: 256KB
 2. bandwidth: 20Mbps
 3. delay : 150ms of one hop
-
-evaluating:
-
->failure percent for vote  when  packet loss ranges fromm 0% to  20% of on hop
-
-**note: Modifiy parameter to evaluation more schema of Phase 2-5**
-
-### Phase 6
-
-preset: 
-1. blocksize: 256KB
-2. bandwidth: 20Mbps
-3. delay : 150ms of one hop
-4. packet loss: 1 percent%
+4. packet loss: 1%
 
 evaluating:
 
 >block generation  and finalization time  when  malice node percent ranges from 0% to  49% in commitee
 
+**note: Modifiy parameter to evaluation more schema of Phase 2-5**
 
 
 

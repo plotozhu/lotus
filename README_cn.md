@@ -44,7 +44,19 @@ TBD
 ### 评估4 
 设置区块大小为256KB，docker带宽为20Mbps,延时为150ms，丢包率从0%到20%时，投票的失败率
 
-** 评估2到评估4 可以通过不同的脚本修改带宽和延时来实现更多情景下的测试 **
+### Phase 5
+
+设置: 
+1. 区块大小: 256KB
+2. 带宽: 20Mbps
+3. 传输延时: 单跳150ms
+4. 丢包 率: 1%
+
+evaluating:
+
+>block generation  and finalization time  when  malice node percent ranges from 0% to  49% in commitee
+
+**note: Modifiy parameter to evaluation more schema of Phase 2-5**
 
 ## 授权信息
 ### Source code 

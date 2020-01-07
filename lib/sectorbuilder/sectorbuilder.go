@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	sectorbuilder "github.com/filecoin-project/filecoin-ffi"
 	"github.com/ipfs/go-datastore"
@@ -64,11 +65,6 @@ type SectorBuilder struct {
 
 	Miner address.Address
 
-	stagedDir   string
-	sealedDir   string
-	cacheDir    string
-	unsealedDir string
-
 	unsealLk sync.Mutex
 
 	noCommit    bool
@@ -88,6 +84,9 @@ type SectorBuilder struct {
 	preCommitWait int32
 	commitWait    int32
 	unsealWait    int32
+
+	fsLk       sync.Mutex
+	filesystem *fs // TODO: multi-fs support
 
 	stopping chan struct{}
 }
@@ -138,7 +137,7 @@ type Config struct {
 	Dir string
 	_   struct{} // guard against nameless init
 }
-//创建，cfg是配置文件，ds是元数据存储的数据库
+
 func New(cfg *Config, ds dtypes.MetadataDS) (*SectorBuilder, error) {
 	if cfg.WorkerThreads < PoStReservedWorkers {
 		return nil, xerrors.Errorf("minimum worker threads is %d, specified %d", PoStReservedWorkers, cfg.WorkerThreads)
@@ -196,8 +195,6 @@ func New(cfg *Config, ds dtypes.MetadataDS) (*SectorBuilder, error) {
 
 	return sb, nil
 }
-        //不使用ds创建，要么远程工作线程？
-
 
 func NewStandalone(cfg *Config) (*SectorBuilder, error) {
 	sb := &SectorBuilder{
@@ -227,16 +224,51 @@ func (sb *SectorBuilder) checkRateLimit() {
 	}
 }
 
-func (sb *SectorBuilder) RateLimit() func() {
-	sb.checkRateLimit()
-
-	sb.rateLimit <- struct{}{}
-
-	return func() {
-		<-sb.rateLimit
+/**
+添加了一个函数，检查工作线程是不是空的
+*/
+func (sb *SectorBuilder) GetFreeWorkerCnt() int {
+	localFree := cap(sb.rateLimit) - len(sb.rateLimit)
+	remoteFree := len(sb.remotes)
+	for _, r := range sb.remotes {
+		if r.busy > 0 {
+			remoteFree--
+		}
 	}
+	return localFree + remoteFree
 }
-//工作线程的状态
+
+//修改代码限制，如果远程线程有空的，就允许执行，否则根据本地线程的空闲情况而定
+func (sb *SectorBuilder) RateLimit() func() {
+
+	sb.remoteLk.Lock()
+	defer sb.remoteLk.Unlock()
+
+	remoteFree := len(sb.remotes)
+	for _, r := range sb.remotes {
+		if r.busy > 0 {
+			remoteFree--
+		}
+	}
+
+	if remoteFree == 0 {
+		sb.checkRateLimit()
+		sb.rateLimit <- struct{}{}
+
+		return func() {
+			<-sb.rateLimit
+		}
+	} else {
+		rl := make(chan struct{})
+		rl <- struct{}{}
+		return func() {
+			<-rl
+			//fmt.Printf("%v",ret)
+		}
+	}
+
+}
+
 type WorkerStats struct {
 	LocalFree     int
 	LocalReserved int
@@ -245,7 +277,6 @@ type WorkerStats struct {
 	RemotesTotal int
 	RemotesFree  int
 
-	//哪些停留在AddPiece上，preCommit、Commit上和unseal上
 	AddPieceWait  int
 	PreCommitWait int
 	CommitWait    int
@@ -276,14 +307,13 @@ func (sb *SectorBuilder) WorkerStats() WorkerStats {
 		UnsealWait:    int(atomic.LoadInt32(&sb.unsealWait)),
 	}
 }
-//a.payload是什么鬼？居然就是proverId，这个命名……
-//自己回复:第一个字节是标志位，后面的是地址位，Payload()就是把第一个字节扔了
+
 func addressToProverID(a address.Address) [32]byte {
 	var proverId [32]byte
 	copy(proverId[:], a.Payload())
 	return proverId
 }
-//自增方式生成id
+
 func (sb *SectorBuilder) AcquireSectorId() (uint64, error) {
 	sb.idLk.Lock()
 	defer sb.idLk.Unlock()
@@ -297,10 +327,6 @@ func (sb *SectorBuilder) AcquireSectorId() (uint64, error) {
 	}
 	return id, nil
 }
-//添加一个片断，TODO:片断和扇区什么关系？
-
-//推测 一个扇区可以存放多个piece，可以把piece看成是扇区内的文件
-
 
 func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Reader, existingPieceSizes []uint64) (PublicPieceInfo, error) {
 	fs := sb.filesystem
@@ -319,14 +345,16 @@ func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Rea
 	if err != nil {
 		return PublicPieceInfo{}, err
 	}
-	//从这里看，一个扇区用一个文件的方式存储
+
 	stagedFile, err := sb.stagedSectorFile(sectorId)
 	if err != nil {
 		return PublicPieceInfo{}, err
 	}
 
-        //以对齐的方式写入数据，返回commP,这个commP中包含什么信息？
+	start := time.Now()
 	_, _, commP, err := sectorbuilder.WriteWithAlignment(f, pieceSize, stagedFile, existingPieceSizes)
+	log.Warn(xerrors.Errorf("[qz2.1]: time to create :%v", time.Since(start).Milliseconds()))
+	start = time.Now()
 	if err != nil {
 		return PublicPieceInfo{}, err
 	}
@@ -345,7 +373,6 @@ func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Rea
 	}, werr()
 }
 
-//看起来，封包分成两个部分，结果数据存放在一个大文件里，而有关扇区内的piece信息存放在元数据的数据库里
 func (sb *SectorBuilder) ReadPieceFromSealedSector(sectorID uint64, offset uint64, size uint64, ticket []byte, commD []byte) (io.ReadCloser, error) {
 	fs := sb.filesystem
 
@@ -462,9 +489,12 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 		},
 		ret: make(chan SealRes),
 	}
-
+	start := time.Now()
+	log.Warn(xerrors.Errorf("[qz2.2]: time to precommit :%v", start))
+	start = time.Now()
 	atomic.AddInt32(&sb.preCommitWait, 1)
 
+	//测试，如果远程可以，就使用远程工作线程
 	select { // prefer remote
 	case sb.precommitTasks <- call:
 		return sb.sealPreCommitRemote(call)
@@ -478,6 +508,9 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 		rl = make(chan struct{})
 	}
 
+	//如果远程可以，使用远程工作线和
+	//否则使用本地的rateLimit
+	//noPreCommit这里的作用有点晕，就是如果是noPreCommit的话，不受limit的限制，直接执行了precommit,晕了！！！
 	select { // use whichever is available
 	case sb.precommitTasks <- call:
 		return sb.sealPreCommitRemote(call)
@@ -486,6 +519,8 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 
 	atomic.AddInt32(&sb.preCommitWait, -1)
 
+	log.Warn(xerrors.Errorf("[qz2.3]: time to wait for precommitTasks :%v", time.Since(start).Milliseconds()))
+	start = time.Now()
 	// local
 
 	defer func() {
@@ -532,6 +567,9 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 		ticket.TicketBytes,
 		pieces,
 	)
+
+	log.Warn(xerrors.Errorf("[qz2.4]: time to precommit %v at :%v", sectorID, time.Since(start).Milliseconds()))
+	start = time.Now()
 	if err != nil {
 		return RawSealPreCommitOutput{}, xerrors.Errorf("presealing sector %d (%s): %w", sectorID, stagedPath, err)
 	}
@@ -565,6 +603,8 @@ func (sb *SectorBuilder) sealCommitLocal(sectorID uint64, ticket SealTicket, see
 		return nil, err
 	}
 
+	//log.Warn(xerrors.Errorf("[qz2.3]: time to wait for precommitTasks :%v", time.Since(start).Milliseconds()))
+	start := time.Now()
 	proof, err = sectorbuilder.SealCommit(
 		sb.ssize,
 		PoRepProofPartitions,
@@ -576,6 +616,8 @@ func (sb *SectorBuilder) sealCommitLocal(sectorID uint64, ticket SealTicket, see
 		pieces,
 		sectorbuilder.RawSealPreCommitOutput(rspco),
 	)
+	log.Warn(xerrors.Errorf("[qz2.5]: time FOR perform commit %v @ %v", sectorID, time.Since(start).Milliseconds()))
+	start = time.Now()
 	if err != nil {
 		log.Warn("StandaloneSealCommit error: ", err)
 		log.Warnf("sid:%d tkt:%v seed:%v, ppi:%v rspco:%v", sectorID, ticket, seed, pieces, rspco)
@@ -613,12 +655,18 @@ func (sb *SectorBuilder) SealCommit(sectorID uint64, ticket SealTicket, seed Sea
 		if sb.noCommit {
 			rl = make(chan struct{})
 		}
+		start := time.Now()
+		log.Warn(xerrors.Errorf("[qz2.6]: start to commit :%v", start))
 
 		select { // use whichever is available
 		case sb.commitTasks <- call:
 			proof, err = sb.sealCommitRemote(call)
+			log.Warn(xerrors.Errorf("[qz2.7]: remote commit :%v", time.Since(start).Milliseconds()))
+
 		case rl <- struct{}{}:
 			proof, err = sb.sealCommitLocal(sectorID, ticket, seed, pieces, rspco)
+			log.Warn(xerrors.Errorf("[qz2.8]: local commit time :%v", time.Since(start).Milliseconds()))
+
 		}
 	}
 	if err != nil {
@@ -697,14 +745,19 @@ func (sb *SectorBuilder) GenerateFallbackPoSt(sectorInfo SortedPublicSectorInfo,
 
 	challengeCount := fallbackPostChallengeCount(uint64(len(sectorInfo.Values())), len(faults))
 
-	proverID := addressToProverID(sb.Miner)
-	candidates, err := sectorbuilder.GenerateCandidates(sb.ssize, proverID, challengeSeed, challengeCount, privsectors)
-	if err != nil {
-		return nil, nil, err
+	if challengeCount > 0 {
+		proverID := addressToProverID(sb.Miner)
+		candidates, err := sectorbuilder.GenerateCandidates(sb.ssize, proverID, challengeSeed, challengeCount, privsectors)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		proof, err := sectorbuilder.GeneratePoSt(sb.ssize, proverID, privsectors, challengeSeed, candidates)
+		return candidates, proof, err
+	} else {
+		return nil, nil, xerrors.Errorf("No valid sectors")
 	}
 
-	proof, err := sectorbuilder.GeneratePoSt(sb.ssize, proverID, privsectors, challengeSeed, candidates)
-	return candidates, proof, err
 }
 
 func (sb *SectorBuilder) Stop() {
@@ -712,6 +765,8 @@ func (sb *SectorBuilder) Stop() {
 }
 
 func fallbackPostChallengeCount(sectors uint64, faults int) uint64 {
+	return (sectors - uint64(faults))
+
 	challengeCount := types.ElectionPostChallengeCount(sectors, faults)
 	if challengeCount > build.MaxFallbackPostChallengeCount {
 		return build.MaxFallbackPostChallengeCount

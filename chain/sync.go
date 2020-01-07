@@ -886,7 +886,7 @@ loop:
 	for blockSet[len(blockSet)-1].Height() > untilHeight {
 		for _, bc := range at.Cids() {
 			if syncer.bad.Has(bc) {
-				for _, b := range ie {
+				for _, b := range acceptedBlocks {
 					syncer.bad.Add(b)
 				}
 

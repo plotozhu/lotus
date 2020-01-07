@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"golang.org/x/xerrors"
 
@@ -179,12 +181,13 @@ func (m *Miner) handlePreCommitted(ctx context.Context, sector SectorInfo) *sect
 
 func (m *Miner) handleCommitting(ctx context.Context, sector SectorInfo) *sectorUpdate {
 	log.Info("scheduling seal proof computation...")
-
+	start := time.Now()
+	log.Info(fmt.Sprintf("[qz4.1] start handleCommitting %v at %v", sector.SectorID, start))
 	proof, err := m.sb.SealCommit(sector.SectorID, sector.Ticket.SB(), sector.Seed.SB(), sector.pieceInfos(), sector.rspco())
 	if err != nil {
 		return sector.upd().to(api.SealCommitFailed).error(xerrors.Errorf("computing seal proof failed: %w", err))
 	}
-
+	log.Info(fmt.Sprintf("[qz4.2] sealcommit ok, cost %v msecond：%v", sector.SectorID, time.Since(start).Milliseconds()))
 	// TODO: Consider splitting states and persist proof for faster recovery
 
 	params := &actors.SectorProveCommitInfo{
@@ -226,12 +229,14 @@ func (m *Miner) handleCommitWait(ctx context.Context, sector SectorInfo) *sector
 		log.Errorf("sector %d entered commit wait state without a message cid", sector.SectorID)
 		return sector.upd().to(api.CommitFailed).error(xerrors.Errorf("entered commit wait with no commit cid"))
 	}
-
+	start := time.Now()
+	log.Info(fmt.Sprintf("[qz4.3] waiting for message on chain %v", sector.SectorID, start))
 	mw, err := m.api.StateWaitMsg(ctx, *sector.CommitMessage)
 	if err != nil {
 		return sector.upd().to(api.CommitFailed).error(xerrors.Errorf("failed to wait for porep inclusion: %w", err))
 	}
 
+	log.Info(fmt.Sprintf("[qz4.4] end perform commiting %v", sector.SectorID, time.Since(start).Milliseconds()))
 	if mw.Receipt.ExitCode != 0 {
 		log.Errorf("UNHANDLED: submitting sector proof failed (exit=%d, msg=%s) (t:%x; s:%x(%d); p:%x)", mw.Receipt.ExitCode, sector.CommitMessage, sector.Ticket.TicketBytes, sector.Seed.TicketBytes, sector.Seed.BlockHeight, sector.Proof)
 		return sector.upd().fatal(xerrors.Errorf("UNHANDLED: submitting sector proof failed (exit: %d)", mw.Receipt.ExitCode))

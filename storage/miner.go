@@ -39,7 +39,7 @@ type Miner struct {
 	sb      *sectorbuilder.SectorBuilder
 	sectors *statestore.StateStore
 	tktFn   TicketFn
-
+	dataFiller     *time.Ticker
 	sectorIncoming chan *SectorInfo  //有新扇区请求的通道
 	sectorUpdated  chan sectorUpdate //扇区信息被更新了
 	stop           chan struct{}
@@ -115,8 +115,17 @@ func (m *Miner) Run(ctx context.Context) error {
 		log.Errorf("%+v", err)
 		return xerrors.Errorf("failed to startup sector state loop: %w", err)
 	}
-
+	go m.fillData(ctx)
 	return nil
+}
+func (m *Miner) fillData(ctx context.Context) {
+
+	m.dataFiller = time.NewTicker(30 * time.Second)
+	for range m.dataFiller.C {
+		if m.sb.GetFreeWorkerCnt() > 1 {
+			m.PledgeSector()
+		}
+	}
 }
 
 func (m *Miner) Stop(ctx context.Context) error {
@@ -125,6 +134,7 @@ func (m *Miner) Stop(ctx context.Context) error {
 	case <-m.stopped:
 		return nil
 	case <-ctx.Done():
+		m.dataFiller.Stop()
 		return ctx.Err()
 	}
 }
@@ -184,6 +194,6 @@ func (epp *SectorBuilderEpp) ComputeProof(ctx context.Context, ssi sectorbuilder
 	if err != nil {
 		return nil, err
 	}
-	log.Infof("ComputeElectionPost took %s", time.Since(start))
+	log.Infof("ComputeElectionPost took %s, winners:%v", time.Since(start), len(winners))
 	return proof, nil
 }

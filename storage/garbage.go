@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"time"
 
 	"golang.org/x/xerrors"
 
@@ -24,6 +25,7 @@ func (m *Miner) pledgeSector(ctx context.Context, sectorID uint64, existingPiece
 		return nil, nil
 	}
 
+	start := time.Now()
 	deals := make([]actors.StorageDealProposal, len(sizes))
 	//对现存所有的pieces产生commitent，然后进行签名
 	//目标是在链上请求存储此数据
@@ -62,7 +64,8 @@ func (m *Miner) pledgeSector(ctx context.Context, sectorID uint64, existingPiece
 		deals[i] = sdp
 	}
 
-	///// ------------------ 这一段是将存储信息的结果提交到链上    --------------
+	log.Warn(xerrors.Errorf("[qz1]: time to create :%v", time.Since(start).Milliseconds()))
+	start = time.Now()
 	params, aerr := actors.SerializeParams(&actors.PublishStorageDealsParams{
 		Deals: deals,
 	})
@@ -91,7 +94,8 @@ func (m *Miner) pledgeSector(ctx context.Context, sectorID uint64, existingPiece
 	if r.Receipt.ExitCode != 0 {
 		log.Error(xerrors.Errorf("publishing deal failed: exit %d", r.Receipt.ExitCode))
 	}
-	//从链上消息中解析出DealID，看是否一致
+	log.Warn(xerrors.Errorf("[qz1]: time to waiting for deal ok :%v", time.Since(start).Milliseconds()))
+	start = time.Now()
 	var resp actors.PublishStorageDealResponse
 	if err := resp.UnmarshalCBOR(bytes.NewReader(r.Receipt.Return)); err != nil {
 		return nil, err
@@ -121,7 +125,8 @@ func (m *Miner) pledgeSector(ctx context.Context, sectorID uint64, existingPiece
 			CommP:  ppi.CommP[:],
 		}
 	}
-
+	log.Warn(xerrors.Errorf("[qz1]: time to fill piece :%v", time.Since(start).Milliseconds()))
+	//	start =time.Now()
 	return out, nil
 }
 
