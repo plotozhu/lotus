@@ -116,6 +116,9 @@ func (st *StateTree) GetActor(addr address.Address) (*types.Actor, error) {
 	return &act, nil
 }
 
+/**
+根据所有变化的actor，生成一个最终的结果的root
+*/
 func (st *StateTree) Flush() (cid.Cid, error) {
 	for addr, act := range st.actorcache {
 		if err := st.root.Set(context.TODO(), string(addr.Bytes()), act); err != nil {

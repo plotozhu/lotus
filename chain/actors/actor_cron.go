@@ -14,7 +14,7 @@ type callTuple struct {
 }
 
 var CronActors = []callTuple{
-	{StoragePowerAddress, SPAMethods.CheckProofSubmissions},
+	{StoragePowerAddress, SPAMethods.CheckProofSubmissions}, //在StoragePowerAddress上执行CheckProofSubmissions
 }
 
 type CronActorState struct{}
@@ -32,6 +32,9 @@ func (ca CronActor) Exports() []interface{} {
 	}
 }
 
+/**
+在每个纪元上执行？
+*/
 func (ca CronActor) EpochTick(act *types.Actor, vmctx types.VMContext, params *struct{}) ([]byte, ActorError) {
 	if vmctx.Message().From != CronAddress {
 		return nil, aerrors.New(1, "EpochTick is only callable as a part of tipset state computation")

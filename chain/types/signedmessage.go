@@ -8,6 +8,9 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
+/***
+	这是对已经签名的信息的处理
+ */
 func (m *SignedMessage) ToStorageBlock() (block.Block, error) {
 	if m.Signature.Type == KTBLS {
 		return m.Message.ToStorageBlock()

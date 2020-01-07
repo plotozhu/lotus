@@ -15,6 +15,9 @@ import (
 
 const NonceIncrement = math.MaxUint64
 
+/**
+sectorUpdate是通用的状态机
+*/
 type sectorUpdate struct {
 	newState api.SectorState
 	id       uint64
@@ -34,11 +37,13 @@ func (u *sectorUpdate) error(err error) *sectorUpdate {
 	return u
 }
 
+//设置状态更新处理函数，这个是状态更新后会被调用的，其实是进入函数
 func (u *sectorUpdate) state(m func(*SectorInfo)) *sectorUpdate {
 	u.mut = m
 	return u
 }
 
+//状态转移
 func (u *sectorUpdate) to(newState api.SectorState) *sectorUpdate {
 	u.newState = newState
 	return u
@@ -49,6 +54,7 @@ func (u *sectorUpdate) setNonce(nc uint64) *sectorUpdate {
 	return u
 }
 
+//对矿工内的状态机进行状态转移
 func (m *Miner) UpdateSectorState(ctx context.Context, sector uint64, snonce uint64, state api.SectorState) error {
 	select {
 	case m.sectorUpdated <- sectorUpdate{
@@ -67,7 +73,7 @@ func (m *Miner) sectorStateLoop(ctx context.Context) error {
 	if err != nil {
 		log.Errorf("loading sector list: %+v", err)
 	}
-
+  //首次进入，更新一下
 	go func() {
 		for _, si := range trackedSectors {
 			select {
@@ -111,7 +117,7 @@ func (m *Miner) sectorStateLoop(ctx context.Context) error {
 			log.Warnf("untracked sector %d found on chain", ocs.SectorID)
 		}
 	}
-
+//无限循环，处理 添加和更新扇区
 	go func() {
 		defer log.Warn("quitting deal provider loop")
 		defer close(m.stopped)
@@ -131,6 +137,9 @@ func (m *Miner) sectorStateLoop(ctx context.Context) error {
 	return nil
 }
 
+/**
+	有扇区信息进入，sector是一个不完全的SectorInfo信息，SectorID是必须的
+*/
 func (m *Miner) onSectorIncoming(sector *SectorInfo) {
 	has, err := m.sectors.Has(sector.SectorID)
 	if err != nil {
@@ -141,6 +150,7 @@ func (m *Miner) onSectorIncoming(sector *SectorInfo) {
 		return
 	}
 
+	//存入到扇区中
 	if err := m.sectors.Begin(sector.SectorID, sector); err != nil {
 		log.Errorf("sector tracking failed: %s", err)
 		return
@@ -158,9 +168,16 @@ func (m *Miner) onSectorIncoming(sector *SectorInfo) {
 	}()
 }
 
+/**每次扇区状态更新后的动作
+	update 是扇区更新的状态机，这意味着一个miner可以管理多个扇区，因此同样也支持多个seal-worker
+ * 首先是进行变形操作
+ * 然后是根据当前状态进行下一步动作，其就是状态机的状态迁移
+*/
 func (m *Miner) onSectorUpdated(ctx context.Context, update sectorUpdate) {
 	log.Infof("Sector %d updated state to %s", update.id, api.SectorStates[update.newState])
 	var sector SectorInfo
+	//Mutate函数调用cborMutate对第二个参数（此处是func)进行处理，第二个参数需要支持valueOf操作符
+
 	err := m.sectors.Mutate(update.id, func(s *SectorInfo) error {
 		if update.nonce < s.Nonce {
 			return xerrors.Errorf("update nonce too low, ignoring (%d < %d)", update.nonce, s.Nonce)
@@ -178,7 +195,7 @@ func (m *Miner) onSectorUpdated(ctx context.Context, update sectorUpdate) {
 			}
 			s.LastErr += fmt.Sprintf("entering state %s: %+v", api.SectorStates[update.newState], update.err)
 		}
-
+		//根据状态迁移函数的设置，更新updatem内的sectorInfo
 		if update.mut != nil {
 			update.mut(s)
 		}
@@ -285,6 +302,10 @@ func (m *Miner) AllocatePiece(size uint64) (sectorID uint64, offset uint64, err 
 	return sid, 0, nil
 }
 
+/**
+		将一个dealId对应的数据封包到 sectorID对应在的扇区里，r是根据 dealId读取数据的读取器
+		//AddPiece函数数据数据存入到了staged目录里
+  */
 func (m *Miner) SealPiece(ctx context.Context, size uint64, r io.Reader, sectorID uint64, dealID uint64) error {
 	log.Infof("Seal piece for deal %d", dealID)
 
@@ -296,16 +317,22 @@ func (m *Miner) SealPiece(ctx context.Context, size uint64, r io.Reader, sectorI
 	return m.newSector(ctx, sectorID, dealID, ppi)
 }
 
+/**
+	新创建一个扇区，
+	sid是扇区ID号
+    dealID是交易的ID号
+    ppi是公共信息
+*/
 func (m *Miner) newSector(ctx context.Context, sid uint64, dealID uint64, ppi sectorbuilder.PublicPieceInfo) error {
 	si := &SectorInfo{
-		SectorID: sid,
+		SectorID: sid,  //扇区号
 
-		Pieces: []Piece{
+		Pieces: []Piece{ //扇区内的片断信息
 			{
-				DealID: dealID,
+				DealID: dealID, //交易的ic号
 
-				Size:  ppi.Size,
-				CommP: ppi.CommP[:],
+				Size:  ppi.Size,   //这个片断的大小
+				CommP: ppi.CommP[:], //这个片断的默克尔根
 			},
 		},
 	}

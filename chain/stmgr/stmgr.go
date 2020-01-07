@@ -25,9 +25,9 @@ import (
 var log = logging.Logger("statemgr")
 
 type StateManager struct {
-	cs *store.ChainStore
+	cs *store.ChainStore //链存储
 
-	stCache  map[string][]cid.Cid
+	stCache  map[string][]cid.Cid //存放TipSet/CID的缓存
 	compWait map[string]chan struct{}
 	stlk     sync.Mutex
 }
@@ -40,6 +40,9 @@ func NewStateManager(cs *store.ChainStore) *StateManager {
 	}
 }
 
+/**
+ * 不是有个decodeKey/encodeKey函数的么
+ */
 func cidsToKey(cids []cid.Cid) string {
 	var out string
 	for _, c := range cids {
@@ -48,6 +51,12 @@ func cidsToKey(cids []cid.Cid) string {
 	return out
 }
 
+/**
+ *
+ * 根据tipset（某个高度）计算得到state_root和receipts root
+ *
+ *
+ */
 func (sm *StateManager) TipSetState(ctx context.Context, ts *types.TipSet) (st cid.Cid, rec cid.Cid, err error) {
 	ctx, span := trace.StartSpan(ctx, "tipSetState")
 	defer span.End()
@@ -58,7 +67,7 @@ func (sm *StateManager) TipSetState(ctx context.Context, ts *types.TipSet) (st c
 	ck := cidsToKey(ts.Cids())
 	sm.stlk.Lock()
 	cw, cwok := sm.compWait[ck]
-	if cwok {
+	if cwok { //正在计算ck中，等到这个计算结束后，再作处理
 		sm.stlk.Unlock()
 		span.AddAttributes(trace.BoolAttribute("waited", true))
 		select {
@@ -69,11 +78,12 @@ func (sm *StateManager) TipSetState(ctx context.Context, ts *types.TipSet) (st c
 		}
 	}
 	cached, ok := sm.stCache[ck]
-	if ok {
+	if ok { //如果在cache中有，就直接返回
 		sm.stlk.Unlock()
 		span.AddAttributes(trace.BoolAttribute("cache", true))
 		return cached[0], cached[1], nil
 	}
+	//cache中没有，因此需要重新计算
 	ch := make(chan struct{})
 	sm.compWait[ck] = ch
 
@@ -105,10 +115,15 @@ func (sm *StateManager) TipSetState(ctx context.Context, ts *types.TipSet) (st c
 	return st, rec, nil
 }
 
+/**
+ * 计算TipSet
+ * 返回state_root (cid)， receipts对应的cid，和一个错误信息
+ */
 func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.BlockHeader, cb func(cid.Cid, *types.Message, *vm.ApplyRet) error) (cid.Cid, cid.Cid, error) {
 	ctx, span := trace.StartSpan(ctx, "computeTipSetState")
 	defer span.End()
 
+	//检查一个TipSet中是否有重复的miner
 	for i := 0; i < len(blks); i++ {
 		for j := i + 1; j < len(blks); j++ {
 			if blks[i].Miner == blks[j].Miner {
@@ -139,11 +154,13 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 
 	r := store.NewChainRand(sm.cs, cids, blks[0].Height)
 
+	//通过父节点状态，区块高度，随机值和区块存储仓库，新建一个虚拟机
 	vmi, err := vm.NewVM(pstate, blks[0].Height, r, address.Undef, sm.cs.Blockstore())
 	if err != nil {
 		return cid.Undef, cid.Undef, xerrors.Errorf("instantiating VM failed: %w", err)
 	}
 
+	//网络状态，地址是1，主要是帐户余额
 	netact, err := vmi.StateTree().GetActor(actors.NetworkAddress)
 	if err != nil {
 		return cid.Undef, cid.Undef, xerrors.Errorf("failed to get network actor: %w", err)
@@ -156,6 +173,7 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 		}
 		vmi.SetBlockMiner(b.Miner)
 
+		//根据miner(t0101)获取实际的owner(帐户)地址
 		owner, err := GetMinerOwner(ctx, sm, pstate, b.Miner)
 		if err != nil {
 			return cid.Undef, cid.Undef, xerrors.Errorf("failed to get owner for miner %s: %w", b.Miner, err)
@@ -166,10 +184,12 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 			return cid.Undef, cid.Undef, xerrors.Errorf("failed to get miner owner actor")
 		}
 
+		//向owner帐户支付报酬
 		if err := vm.Transfer(netact, act, reward); err != nil {
 			return cid.Undef, cid.Undef, xerrors.Errorf("failed to deduct funds from network actor: %w", err)
 		}
 
+		//TODO 通过执行SubmitElectionPoSt来更新状态？？？
 		// all block miners created a valid post, go update the actor state
 		postSubmitMsg := &types.Message{
 			From:     actors.NetworkAddress,
@@ -189,6 +209,7 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 		}
 	}
 
+	//每一个actor上有两个重要的状态，nonce和balance状态
 	// TODO: can't use method from chainstore because it doesnt let us know who the block miners were
 	applied := make(map[address.Address]uint64)
 	balances := make(map[address.Address]types.BigInt)
@@ -210,11 +231,13 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 	for _, b := range blks {
 		vmi.SetBlockMiner(b.Miner)
 
+		//从block中得到的消息
 		bms, sms, err := sm.cs.MessagesForBlock(b)
 		if err != nil {
 			return cid.Undef, cid.Undef, xerrors.Errorf("failed to get messages for block: %w", err)
 		}
 
+		//打包区块中的消息
 		cmsgs := make([]store.ChainMsg, 0, len(bms)+len(sms))
 		for _, m := range bms {
 			cmsgs = append(cmsgs, m)
@@ -223,27 +246,35 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 			cmsgs = append(cmsgs, sm)
 		}
 
+		//更新状态
 		for _, cm := range cmsgs {
 			m := cm.VMMessage()
+			//预读取发起者的状态
 			if err := preloadAddr(m.From); err != nil {
 				return cid.Undef, cid.Undef, err
 			}
 
+			//利用这个Nonce进行重复消息的判定，巧妙
 			if applied[m.From] != m.Nonce {
 				continue
 			}
 			applied[m.From]++
 
+			//余额不足了
 			if balances[m.From].LessThan(m.RequiredFunds()) {
 				continue
 			}
+
+			//cache记录
 			balances[m.From] = types.BigSub(balances[m.From], m.RequiredFunds())
 
+			//执行消息内容
 			r, err := vmi.ApplyMessage(ctx, m)
 			if err != nil {
 				return cid.Undef, cid.Undef, err
 			}
 
+			//生成收据
 			receipts = append(receipts, &r.MessageReceipt)
 
 			if cb != nil {
@@ -254,6 +285,7 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 		}
 	}
 
+	//每一个区块都执行一次Cron,就是执行一次EpochTick
 	// TODO: this nonce-getting is a tiny bit ugly
 	ca, err := vmi.StateTree().GetActor(actors.CronAddress)
 	if err != nil {
@@ -273,16 +305,19 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 	if err != nil {
 		return cid.Undef, cid.Undef, err
 	}
+	//执行失败了么
 	if ret.ExitCode != 0 {
 		return cid.Undef, cid.Undef, xerrors.Errorf("CheckProofSubmissions exit was non-zero: %d", ret.ExitCode)
 	}
 
+	//收据的root
 	bs := amt.WrapBlockstore(sm.cs.Blockstore())
 	rectroot, err := amt.FromArray(bs, receipts)
 	if err != nil {
 		return cid.Undef, cid.Undef, xerrors.Errorf("failed to build receipts amt: %w", err)
 	}
 
+	//刷新最新的数据，得到新的state root
 	st, err := vmi.Flush(ctx)
 	if err != nil {
 		return cid.Undef, cid.Undef, xerrors.Errorf("vm flush failed: %w", err)
@@ -291,6 +326,10 @@ func (sm *StateManager) computeTipSetState(ctx context.Context, blks []*types.Bl
 	return st, rectroot, nil
 }
 
+/**
+ *
+ *  在某个TipSet中，根据addr获取actor()
+ */
 func (sm *StateManager) GetActor(addr address.Address, ts *types.TipSet) (*types.Actor, error) {
 	if ts == nil {
 		ts = sm.cs.GetHeaviestTipSet()

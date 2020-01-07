@@ -49,13 +49,17 @@ func (spa StoragePowerActor) Exports() []interface{} {
 	}
 }
 
+/**
+ * 存储能力的总状态
+ *
+ */
 type StoragePowerState struct {
-	Miners         cid.Cid
+	Miners         cid.Cid //记录了所有的矿工
 	ProvingBuckets cid.Cid // amt[ProvingPeriodBucket]hamt[minerAddress]struct{}
-	MinerCount     uint64
-	LastMinerCheck uint64
+	MinerCount     uint64  // miner的总数
+	LastMinerCheck uint64  //上次的数据
 
-	TotalStorage types.BigInt
+	TotalStorage types.BigInt //全网总功率
 }
 
 type CreateStorageMinerParams struct {
@@ -65,6 +69,9 @@ type CreateStorageMinerParams struct {
 	PeerID     peer.ID
 }
 
+/**
+创建存储矿工，这个是响应执行创建矿工的命令的过程，因此会根据vmctx的消息处理
+*/
 func (spa StoragePowerActor) CreateStorageMiner(act *types.Actor, vmctx types.VMContext, params *CreateStorageMinerParams) ([]byte, ActorError) {
 	if !build.SupportedSectorSize(params.SectorSize) {
 		return nil, aerrors.New(1, "Unsupported sector size")
@@ -76,15 +83,18 @@ func (spa StoragePowerActor) CreateStorageMiner(act *types.Actor, vmctx types.VM
 		return nil, err
 	}
 
+	//计算需要提交存储抵押
 	reqColl, err := pledgeCollateralForSize(vmctx, types.NewInt(0), self.TotalStorage, self.MinerCount+1)
 	if err != nil {
 		return nil, err
 	}
 
+	//检查余额是否足够
 	if vmctx.Message().Value.LessThan(reqColl) {
 		return nil, aerrors.Newf(1, "not enough funds passed to cover required miner collateral (needed %s, got %s)", reqColl, vmctx.Message().Value)
 	}
 
+	//创建一个可执行的编码
 	encoded, err := CreateExecParams(StorageMinerCodeCid, &StorageMinerConstructorParams{
 		Owner:      params.Owner,
 		Worker:     params.Worker,
@@ -95,16 +105,19 @@ func (spa StoragePowerActor) CreateStorageMiner(act *types.Actor, vmctx types.VM
 		return nil, err
 	}
 
+	//虚拟机的send函数统一处理
 	ret, err := vmctx.Send(InitAddress, IAMethods.Exec, vmctx.Message().Value, encoded)
 	if err != nil {
 		return nil, err
 	}
 
+	//返回了矿工地址，似乎应该是参数中的owner?
 	naddr, nerr := address.NewFromBytes(ret)
 	if nerr != nil {
 		return nil, aerrors.Absorb(nerr, 2, "could not read address of new actor")
 	}
 
+	//在矿工组里添加这个矿工
 	ncid, err := MinerSetAdd(context.TODO(), vmctx, self.Miners, naddr)
 	if err != nil {
 		return nil, err
@@ -112,6 +125,7 @@ func (spa StoragePowerActor) CreateStorageMiner(act *types.Actor, vmctx types.VM
 	self.Miners = ncid
 	self.MinerCount++
 
+	//更新状态
 	nroot, err := vmctx.Storage().Put(&self)
 	if err != nil {
 		return nil, err
@@ -129,6 +143,8 @@ type ArbitrateConsensusFaultParams struct {
 	Block2 *types.BlockHeader
 }
 
+//共识故障时的仲裁，同一个Miner出了两个同高度的区块
+//QZ TODO 什么时候调用？作用？
 func (spa StoragePowerActor) ArbitrateConsensusFault(act *types.Actor, vmctx types.VMContext, params *ArbitrateConsensusFaultParams) ([]byte, ActorError) {
 	if params.Block1.Miner != params.Block2.Miner {
 		return nil, aerrors.New(2, "blocks must be from the same miner")
@@ -272,6 +288,10 @@ type UpdateStorageParams struct {
 	PreviousSlashDeadline uint64
 }
 
+/**
+ * 更新存储信息
+ *
+ */
 func (spa StoragePowerActor) UpdateStorage(act *types.Actor, vmctx types.VMContext, params *UpdateStorageParams) ([]byte, ActorError) {
 	var self StoragePowerState
 	old := vmctx.Storage().GetHead()
@@ -279,6 +299,7 @@ func (spa StoragePowerActor) UpdateStorage(act *types.Actor, vmctx types.VMConte
 		return nil, err
 	}
 
+	//当前是否已经记录该矿工
 	has, err := MinerSetHas(vmctx, self.Miners, vmctx.Message().From)
 	if err != nil {
 		return nil, err
@@ -316,7 +337,7 @@ func (spa StoragePowerActor) UpdateStorage(act *types.Actor, vmctx types.VMConte
 			return nil, aerrors.Wrapf(err, "delete from bucket %d, next %d", previousBucket, nextBucket)
 		}
 	}
-
+	//把这个矿工加到了bucket里
 	err = addMinerToBucket(vmctx, buckets, nextBucket)
 	if err != nil {
 		return nil, err
@@ -514,7 +535,12 @@ func (spa StoragePowerActor) PledgeCollateralForSize(act *types.Actor, vmctx typ
 	return totalCollateral.Bytes(), nil
 }
 
+/**
+提交存储抵押
+*/
 func pledgeCollateralForSize(vmctx types.VMContext, size, totalStorage types.BigInt, minerCount uint64) (types.BigInt, aerrors.ActorError) {
+	//NetworkAddress 是1， 固定的地址
+	//这个就是得到网络里的存储池里的余额
 	netBalance, err := vmctx.GetBalance(NetworkAddress)
 	if err != nil {
 		return types.EmptyInt, err
@@ -523,7 +549,7 @@ func pledgeCollateralForSize(vmctx types.VMContext, size, totalStorage types.Big
 	// TODO: the spec says to also grab 'total vested filecoin' and include it as available
 	// If we don't factor that in, we effectively assume all of the locked up filecoin is 'available'
 	// the blocker on that right now is that its hard to tell how much filecoin is unlocked
-
+	//可用的代币是全部代币减去抵押的
 	availableFilecoin := types.BigSub(
 		types.BigMul(types.NewInt(build.TotalFilecoin), types.NewInt(build.FilecoinPrecision)),
 		netBalance,
@@ -566,6 +592,9 @@ func pledgeCollateralForSize(vmctx types.VMContext, size, totalStorage types.Big
 	return types.BigAdd(powerCollateral, perCapCollateral), nil
 }
 
+/***
+检查 提交的证明
+*/
 func (spa StoragePowerActor) CheckProofSubmissions(act *types.Actor, vmctx types.VMContext, param *struct{}) ([]byte, ActorError) {
 	if vmctx.Message().From != CronAddress {
 		return nil, aerrors.New(1, "CheckProofSubmissions is only callable from the cron actor")
@@ -601,6 +630,7 @@ func (spa StoragePowerActor) CheckProofSubmissions(act *types.Actor, vmctx types
 }
 
 func checkProofSubmissionsAtH(vmctx types.VMContext, self *StoragePowerState, height uint64) aerrors.ActorError {
+
 	bucketID := height % build.SlashablePowerDelay
 
 	buckets, eerr := amt.LoadAMT(types.WrapStorage(vmctx.Storage()), self.ProvingBuckets)

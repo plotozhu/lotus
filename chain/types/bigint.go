@@ -124,7 +124,7 @@ func (bi *BigInt) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-var sizeUnits = []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB"}
+var sizeUnits = []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "ZiB1", "ZiB2", "ZiB3", "ZiB4", "ZiB5"}
 
 func (bi BigInt) SizeStr() string {
 	r := new(big.Rat).SetInt(bi.Int)

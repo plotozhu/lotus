@@ -39,9 +39,9 @@ type Miner struct {
 	sb      *sectorbuilder.SectorBuilder
 	sectors *statestore.StateStore
 	tktFn   TicketFn
-
-	sectorIncoming chan *SectorInfo
-	sectorUpdated  chan sectorUpdate
+	dataFiller     *time.Ticker
+	sectorIncoming chan *SectorInfo  //有新扇区请求的通道
+	sectorUpdated  chan sectorUpdate //扇区信息被更新了
 	stop           chan struct{}
 	stopped        chan struct{}
 }
@@ -70,7 +70,14 @@ type storageMinerApi interface {
 	WalletBalance(context.Context, address.Address) (types.BigInt, error)
 	WalletHas(context.Context, address.Address) (bool, error)
 }
+/**
+	创建矿工
+	addr：矿工的地址
+    ds：  元数据存储器
+	sb：  扇区生成器
 
+	tktFn：是随机的ticket的生成函数
+ */
 func NewMiner(api storageMinerApi, addr address.Address, h host.Host, ds datastore.Batching, sb *sectorbuilder.SectorBuilder, tktFn TicketFn) (*Miner, error) {
 	return &Miner{
 		api: api,
@@ -108,8 +115,17 @@ func (m *Miner) Run(ctx context.Context) error {
 		log.Errorf("%+v", err)
 		return xerrors.Errorf("failed to startup sector state loop: %w", err)
 	}
-
+	go m.fillData(ctx)
 	return nil
+}
+func (m *Miner) fillData(ctx context.Context) {
+
+	m.dataFiller = time.NewTicker(30 * time.Second)
+	for range m.dataFiller.C {
+		if m.sb.GetFreeWorkerCnt() > 1 {
+			m.PledgeSector()
+		}
+	}
 }
 
 func (m *Miner) Stop(ctx context.Context) error {
@@ -118,6 +134,7 @@ func (m *Miner) Stop(ctx context.Context) error {
 	case <-m.stopped:
 		return nil
 	case <-ctx.Done():
+		m.dataFiller.Stop()
 		return ctx.Err()
 	}
 }
@@ -177,6 +194,6 @@ func (epp *SectorBuilderEpp) ComputeProof(ctx context.Context, ssi sectorbuilder
 	if err != nil {
 		return nil, err
 	}
-	log.Infof("ComputeElectionPost took %s", time.Since(start))
+	log.Infof("ComputeElectionPost took %s, winners:%v", time.Since(start), len(winners))
 	return proof, nil
 }

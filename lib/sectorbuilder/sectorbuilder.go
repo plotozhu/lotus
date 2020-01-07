@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	sectorbuilder "github.com/filecoin-project/filecoin-ffi"
 	"github.com/ipfs/go-datastore"
@@ -223,14 +224,49 @@ func (sb *SectorBuilder) checkRateLimit() {
 	}
 }
 
-func (sb *SectorBuilder) RateLimit() func() {
-	sb.checkRateLimit()
-
-	sb.rateLimit <- struct{}{}
-
-	return func() {
-		<-sb.rateLimit
+/**
+添加了一个函数，检查工作线程是不是空的
+*/
+func (sb *SectorBuilder) GetFreeWorkerCnt() int {
+	localFree := cap(sb.rateLimit) - len(sb.rateLimit)
+	remoteFree := len(sb.remotes)
+	for _, r := range sb.remotes {
+		if r.busy > 0 {
+			remoteFree--
+		}
 	}
+	return localFree + remoteFree
+}
+
+//修改代码限制，如果远程线程有空的，就允许执行，否则根据本地线程的空闲情况而定
+func (sb *SectorBuilder) RateLimit() func() {
+
+	sb.remoteLk.Lock()
+	defer sb.remoteLk.Unlock()
+
+	remoteFree := len(sb.remotes)
+	for _, r := range sb.remotes {
+		if r.busy > 0 {
+			remoteFree--
+		}
+	}
+
+	if remoteFree == 0 {
+		sb.checkRateLimit()
+		sb.rateLimit <- struct{}{}
+
+		return func() {
+			<-sb.rateLimit
+		}
+	} else {
+		rl := make(chan struct{})
+		rl <- struct{}{}
+		return func() {
+			<-rl
+			//fmt.Printf("%v",ret)
+		}
+	}
+
 }
 
 type WorkerStats struct {
@@ -315,7 +351,10 @@ func (sb *SectorBuilder) AddPiece(pieceSize uint64, sectorId uint64, file io.Rea
 		return PublicPieceInfo{}, err
 	}
 
+	start := time.Now()
 	_, _, commP, err := sectorbuilder.WriteWithAlignment(f, pieceSize, stagedFile, existingPieceSizes)
+	log.Warn(xerrors.Errorf("[qz2.1]: time to create :%v", time.Since(start).Milliseconds()))
+	start = time.Now()
 	if err != nil {
 		return PublicPieceInfo{}, err
 	}
@@ -450,9 +489,12 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 		},
 		ret: make(chan SealRes),
 	}
-
+	start := time.Now()
+	log.Warn(xerrors.Errorf("[qz2.2]: time to precommit :%v", start))
+	start = time.Now()
 	atomic.AddInt32(&sb.preCommitWait, 1)
 
+	//测试，如果远程可以，就使用远程工作线程
 	select { // prefer remote
 	case sb.precommitTasks <- call:
 		return sb.sealPreCommitRemote(call)
@@ -466,6 +508,9 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 		rl = make(chan struct{})
 	}
 
+	//如果远程可以，使用远程工作线和
+	//否则使用本地的rateLimit
+	//noPreCommit这里的作用有点晕，就是如果是noPreCommit的话，不受limit的限制，直接执行了precommit,晕了！！！
 	select { // use whichever is available
 	case sb.precommitTasks <- call:
 		return sb.sealPreCommitRemote(call)
@@ -474,6 +519,8 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 
 	atomic.AddInt32(&sb.preCommitWait, -1)
 
+	log.Warn(xerrors.Errorf("[qz2.3]: time to wait for precommitTasks :%v", time.Since(start).Milliseconds()))
+	start = time.Now()
 	// local
 
 	defer func() {
@@ -520,6 +567,9 @@ func (sb *SectorBuilder) SealPreCommit(sectorID uint64, ticket SealTicket, piece
 		ticket.TicketBytes,
 		pieces,
 	)
+
+	log.Warn(xerrors.Errorf("[qz2.4]: time to precommit %v at :%v", sectorID, time.Since(start).Milliseconds()))
+	start = time.Now()
 	if err != nil {
 		return RawSealPreCommitOutput{}, xerrors.Errorf("presealing sector %d (%s): %w", sectorID, stagedPath, err)
 	}
@@ -553,6 +603,8 @@ func (sb *SectorBuilder) sealCommitLocal(sectorID uint64, ticket SealTicket, see
 		return nil, err
 	}
 
+	//log.Warn(xerrors.Errorf("[qz2.3]: time to wait for precommitTasks :%v", time.Since(start).Milliseconds()))
+	start := time.Now()
 	proof, err = sectorbuilder.SealCommit(
 		sb.ssize,
 		PoRepProofPartitions,
@@ -564,6 +616,8 @@ func (sb *SectorBuilder) sealCommitLocal(sectorID uint64, ticket SealTicket, see
 		pieces,
 		sectorbuilder.RawSealPreCommitOutput(rspco),
 	)
+	log.Warn(xerrors.Errorf("[qz2.5]: time FOR perform commit %v @ %v", sectorID, time.Since(start).Milliseconds()))
+	start = time.Now()
 	if err != nil {
 		log.Warn("StandaloneSealCommit error: ", err)
 		log.Warnf("sid:%d tkt:%v seed:%v, ppi:%v rspco:%v", sectorID, ticket, seed, pieces, rspco)
@@ -601,12 +655,18 @@ func (sb *SectorBuilder) SealCommit(sectorID uint64, ticket SealTicket, seed Sea
 		if sb.noCommit {
 			rl = make(chan struct{})
 		}
+		start := time.Now()
+		log.Warn(xerrors.Errorf("[qz2.6]: start to commit :%v", start))
 
 		select { // use whichever is available
 		case sb.commitTasks <- call:
 			proof, err = sb.sealCommitRemote(call)
+			log.Warn(xerrors.Errorf("[qz2.7]: remote commit :%v", time.Since(start).Milliseconds()))
+
 		case rl <- struct{}{}:
 			proof, err = sb.sealCommitLocal(sectorID, ticket, seed, pieces, rspco)
+			log.Warn(xerrors.Errorf("[qz2.8]: local commit time :%v", time.Since(start).Milliseconds()))
+
 		}
 	}
 	if err != nil {
@@ -685,14 +745,19 @@ func (sb *SectorBuilder) GenerateFallbackPoSt(sectorInfo SortedPublicSectorInfo,
 
 	challengeCount := fallbackPostChallengeCount(uint64(len(sectorInfo.Values())), len(faults))
 
-	proverID := addressToProverID(sb.Miner)
-	candidates, err := sectorbuilder.GenerateCandidates(sb.ssize, proverID, challengeSeed, challengeCount, privsectors)
-	if err != nil {
-		return nil, nil, err
+	if challengeCount > 0 {
+		proverID := addressToProverID(sb.Miner)
+		candidates, err := sectorbuilder.GenerateCandidates(sb.ssize, proverID, challengeSeed, challengeCount, privsectors)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		proof, err := sectorbuilder.GeneratePoSt(sb.ssize, proverID, privsectors, challengeSeed, candidates)
+		return candidates, proof, err
+	} else {
+		return nil, nil, xerrors.Errorf("No valid sectors")
 	}
 
-	proof, err := sectorbuilder.GeneratePoSt(sb.ssize, proverID, privsectors, challengeSeed, candidates)
-	return candidates, proof, err
 }
 
 func (sb *SectorBuilder) Stop() {
@@ -700,6 +765,8 @@ func (sb *SectorBuilder) Stop() {
 }
 
 func fallbackPostChallengeCount(sectors uint64, faults int) uint64 {
+	return (sectors - uint64(faults))
+
 	challengeCount := types.ElectionPostChallengeCount(sectors, faults)
 	if challengeCount > build.MaxFallbackPostChallengeCount {
 		return build.MaxFallbackPostChallengeCount

@@ -54,11 +54,13 @@ func ParseBSOptions(optfield uint64) *BSOptions {
 	}
 }
 
+/// 读取区块信息还是消息数据
 const (
 	BSOptBlocks   = 1 << 0
 	BSOptMessages = 1 << 1
 )
 
+/// 同步的回应
 type BlockSyncResponse struct {
 	Chain []*BSTipSet
 
@@ -66,6 +68,8 @@ type BlockSyncResponse struct {
 	Message string
 }
 
+/// 同步服务的TipSet
+/// 在这个信息中包括了message消息
 type BSTipSet struct {
 	Blocks []*types.BlockHeader
 
@@ -82,6 +86,10 @@ func NewBlockSyncService(cs *store.ChainStore) *BlockSyncService {
 	}
 }
 
+/**
+ * 执行数据流
+ *
+ */
 func (bss *BlockSyncService) HandleStream(s inet.Stream) {
 	ctx, span := trace.StartSpan(context.Background(), "blocksync.HandleStream")
 	defer span.End()
@@ -95,18 +103,23 @@ func (bss *BlockSyncService) HandleStream(s inet.Stream) {
 	}
 	log.Infof("block sync request for: %s %d", req.Start, req.RequestLength)
 
+	//读取数据
 	resp, err := bss.processRequest(ctx, &req)
 	if err != nil {
 		log.Warn("failed to process block sync request: ", err)
 		return
 	}
 
+	//写回去
 	if err := cborutil.WriteCborRPC(s, resp); err != nil {
 		log.Warn("failed to write back response for handle stream: ", err)
 		return
 	}
 }
 
+/****
+ * 处理理区块读取请求
+ */
 func (bss *BlockSyncService) processRequest(ctx context.Context, req *BlockSyncRequest) (*BlockSyncResponse, error) {
 	_, span := trace.StartSpan(ctx, "blocksync.ProcessRequest")
 	defer span.End()
@@ -124,6 +137,7 @@ func (bss *BlockSyncService) processRequest(ctx context.Context, req *BlockSyncR
 		trace.BoolAttribute("messages", opts.IncludeMessages),
 	)
 
+	//存储库中读取区块信息
 	chain, err := bss.collectChainSegment(types.NewTipSetKey(req.Start...), req.RequestLength, opts)
 	if err != nil {
 		log.Warn("encountered error while responding to block sync request: ", err)
@@ -133,12 +147,18 @@ func (bss *BlockSyncService) processRequest(ctx context.Context, req *BlockSyncR
 		}, nil
 	}
 
+	//返回
 	return &BlockSyncResponse{
 		Chain:  chain,
 		Status: 0,
 	}, nil
 }
 
+/**
+ *
+ * 从存储库里面读取TipSet信息，转换成BSTipSet的形式，用于返回给请求者
+ *
+ */
 func (bss *BlockSyncService) collectChainSegment(start types.TipSetKey, length uint64, opts *BSOptions) ([]*BSTipSet, error) {
 	var bstips []*BSTipSet
 	cur := start
@@ -175,6 +195,14 @@ func (bss *BlockSyncService) collectChainSegment(start types.TipSetKey, length u
 	}
 }
 
+/**
+ * 收集TipSet中的消息
+ * @ts是tipset
+ *
+ * @return
+ * bls消息数组，每个block中的bls消息， secpk消息数组，每个block中的secpk消息，
+ *
+ */
 func (bss *BlockSyncService) gatherMessages(ts *types.TipSet) ([]*types.Message, [][]uint64, []*types.SignedMessage, [][]uint64, error) {
 	blsmsgmap := make(map[cid.Cid]uint64)
 	secpkmsgmap := make(map[cid.Cid]uint64)
@@ -218,6 +246,10 @@ func (bss *BlockSyncService) gatherMessages(ts *types.TipSet) ([]*types.Message,
 	return blsmsgs, blsincl, secpkmsgs, secpkincl, nil
 }
 
+/**
+ *  把BSTipSet转换成可用于存储的FullTipSet消息
+ *
+ */
 func bstsToFullTipSet(bts *BSTipSet) (*store.FullTipSet, error) {
 	fts := &store.FullTipSet{}
 	for i, b := range bts.Blocks {

@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"golang.org/x/xerrors"
 
@@ -28,7 +30,9 @@ func (m *Miner) handleSectorUpdate(ctx context.Context, sector SectorInfo, cb pr
 		}
 	}()
 }
-
+/**
+	有未封包的扇区数据在SectorInfo里，handlePacking将
+ */
 func (m *Miner) handlePacking(ctx context.Context, sector SectorInfo) *sectorUpdate {
 	log.Infow("performing filling up rest of the sector...", "sector", sector.SectorID)
 
@@ -43,6 +47,7 @@ func (m *Miner) handlePacking(ctx context.Context, sector SectorInfo) *sectorUpd
 		return sector.upd().fatal(xerrors.Errorf("too much data in sector: %d > %d", allocated, ubytes))
 	}
 
+	//fillers From Remaining
 	fillerSizes, err := fillersFromRem(ubytes - allocated)
 	if err != nil {
 		return sector.upd().fatal(err)
@@ -51,17 +56,21 @@ func (m *Miner) handlePacking(ctx context.Context, sector SectorInfo) *sectorUpd
 	if len(fillerSizes) > 0 {
 		log.Warnf("Creating %d filler pieces for sector %d", len(fillerSizes), sector.SectorID)
 	}
-
+	//此处调用  pledgeSector将扇区填满
 	pieces, err := m.pledgeSector(ctx, sector.SectorID, sector.existingPieces(), fillerSizes...)
 	if err != nil {
 		return sector.upd().fatal(xerrors.Errorf("filling up the sector (%v): %w", fillerSizes, err))
 	}
 
+	//数据填充完毕后，扇区的状态转换到了Unsealed状态
 	return sector.upd().to(api.Unsealed).state(func(info *SectorInfo) {
 		info.Pieces = append(info.Pieces, pieces...)
 	})
 }
+/**
+	handleUnsealed执行封包动作，处理已经填充完毕的扇区区数据
 
+ */
 func (m *Miner) handleUnsealed(ctx context.Context, sector SectorInfo) *sectorUpdate {
 	log.Infow("performing sector replication...", "sector", sector.SectorID)
 	ticket, err := m.tktFn(ctx)
@@ -172,12 +181,13 @@ func (m *Miner) handlePreCommitted(ctx context.Context, sector SectorInfo) *sect
 
 func (m *Miner) handleCommitting(ctx context.Context, sector SectorInfo) *sectorUpdate {
 	log.Info("scheduling seal proof computation...")
-
+	start := time.Now()
+	log.Info(fmt.Sprintf("[qz4.1] start handleCommitting %v at %v", sector.SectorID, start))
 	proof, err := m.sb.SealCommit(sector.SectorID, sector.Ticket.SB(), sector.Seed.SB(), sector.pieceInfos(), sector.rspco())
 	if err != nil {
 		return sector.upd().to(api.SealCommitFailed).error(xerrors.Errorf("computing seal proof failed: %w", err))
 	}
-
+	log.Info(fmt.Sprintf("[qz4.2] sealcommit ok, cost %v msecond：%v", sector.SectorID, time.Since(start).Milliseconds()))
 	// TODO: Consider splitting states and persist proof for faster recovery
 
 	params := &actors.SectorProveCommitInfo{
@@ -219,12 +229,14 @@ func (m *Miner) handleCommitWait(ctx context.Context, sector SectorInfo) *sector
 		log.Errorf("sector %d entered commit wait state without a message cid", sector.SectorID)
 		return sector.upd().to(api.CommitFailed).error(xerrors.Errorf("entered commit wait with no commit cid"))
 	}
-
+	start := time.Now()
+	log.Info(fmt.Sprintf("[qz4.3] waiting for message on chain %v", sector.SectorID, start))
 	mw, err := m.api.StateWaitMsg(ctx, *sector.CommitMessage)
 	if err != nil {
 		return sector.upd().to(api.CommitFailed).error(xerrors.Errorf("failed to wait for porep inclusion: %w", err))
 	}
 
+	log.Info(fmt.Sprintf("[qz4.4] end perform commiting %v", sector.SectorID, time.Since(start).Milliseconds()))
 	if mw.Receipt.ExitCode != 0 {
 		log.Errorf("UNHANDLED: submitting sector proof failed (exit=%d, msg=%s) (t:%x; s:%x(%d); p:%x)", mw.Receipt.ExitCode, sector.CommitMessage, sector.Ticket.TicketBytes, sector.Seed.TicketBytes, sector.Seed.BlockHeight, sector.Proof)
 		return sector.upd().fatal(xerrors.Errorf("UNHANDLED: submitting sector proof failed (exit: %d)", mw.Receipt.ExitCode))
