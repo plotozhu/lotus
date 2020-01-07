@@ -1,4 +1,4 @@
-![Lotus](documentation/images/lotus_logo_h.png)
+
 
 
 # Pnyx Consensus  
