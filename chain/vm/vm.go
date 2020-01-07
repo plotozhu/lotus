@@ -1,7 +1,8 @@
 package vm
+
 /*****
-	这个是虚拟机的实现
- */
+这个是虚拟机的实现
+*/
 import (
 	"bytes"
 	"context"
@@ -62,7 +63,7 @@ type VMContext struct {
 	sroot cid.Cid
 
 	// address that started invoke chain
-	origin address.Address  //这个应该就是coinbase
+	origin address.Address //这个应该就是coinbase
 }
 
 // Message is the message that kicked off the current invocation
@@ -106,6 +107,7 @@ func (vmc *VMContext) GetHead() cid.Cid {
 }
 
 func (vmc *VMContext) Commit(oldh, newh cid.Cid) aerrors.ActorError {
+	//记录虚拟机消耗的gas
 	if err := vmc.ChargeGas(gasCommit); err != nil {
 		return aerrors.Wrap(err, "out of gas")
 	}
@@ -340,9 +342,10 @@ type ApplyRet struct {
 	types.MessageReceipt
 	ActorErr aerrors.ActorError
 }
+
 /**
-    虚拟机执行状态命令,所有的命令都是消息格式
- */
+  虚拟机执行状态命令,所有的命令都是消息格式
+*/
 func (vm *VM) send(ctx context.Context, msg *types.Message, parent *VMContext,
 	gasCharge uint64) ([]byte, aerrors.ActorError, *VMContext) {
 
@@ -422,7 +425,7 @@ func checkMessage(msg *types.Message) error {
 }
 
 /**
-	根据消息执行，并且生成一个收据
+根据消息执行，并且生成一个收据
 */
 func (vm *VM) ApplyMessage(ctx context.Context, msg *types.Message) (*ApplyRet, error) {
 	ctx, span := trace.StartSpan(ctx, "vm.ApplyMessage")
@@ -538,9 +541,10 @@ func (vm *VM) ActorBalance(addr address.Address) (types.BigInt, aerrors.ActorErr
 
 	return act.Balance, nil
 }
+
 /**
-	根据所有变化的actor，生成一个最终的结果的root
- */
+根据所有变化的actor，生成一个最终的结果的root
+*/
 func (vm *VM) Flush(ctx context.Context) (cid.Cid, error) {
 	_, span := trace.StartSpan(ctx, "vm.Flush")
 	defer span.End()
@@ -650,7 +654,7 @@ func (vm *VM) SetBlockHeight(h uint64) {
     actor: 是执行这个invoke的操作对象，即message中的to对象，
    method：是方法
 	param是编码后的参数
- */
+*/
 func (vm *VM) Invoke(act *types.Actor, vmctx *VMContext, method uint64, params []byte) ([]byte, aerrors.ActorError) {
 	ctx, span := trace.StartSpan(vmctx.ctx, "vm.Invoke")
 	defer span.End()
@@ -676,10 +680,11 @@ func (vm *VM) Invoke(act *types.Actor, vmctx *VMContext, method uint64, params [
 	}
 	return ret, nil
 }
+
 /***
-	from 向to 转移amt（amount)个代币，在from中减去，在to中加上，
-	实际上运行前需要检查是否余额是否足够，如果余额不足，直接离开
- */
+from 向to 转移amt（amount)个代币，在from中减去，在to中加上，
+实际上运行前需要检查是否余额是否足够，如果余额不足，直接离开
+*/
 func Transfer(from, to *types.Actor, amt types.BigInt) error {
 	if from == to {
 		return nil
@@ -695,9 +700,10 @@ func Transfer(from, to *types.Actor, amt types.BigInt) error {
 	depositFunds(to, amt)
 	return nil
 }
+
 /**
-	从act中扣款
- */
+从act中扣款
+*/
 func deductFunds(act *types.Actor, amt types.BigInt) error {
 	if act.Balance.LessThan(amt) {
 		return fmt.Errorf("not enough funds")
@@ -706,9 +712,10 @@ func deductFunds(act *types.Actor, amt types.BigInt) error {
 	act.Balance = types.BigSub(act.Balance, amt)
 	return nil
 }
+
 /**
-	向actor的余额中加款
- */
+向actor的余额中加款
+*/
 func depositFunds(act *types.Actor, amt types.BigInt) {
 	act.Balance = types.BigAdd(act.Balance, amt)
 }
@@ -717,9 +724,9 @@ var miningRewardTotal = types.FromFil(build.MiningRewardTotal)
 var blocksPerEpoch = types.NewInt(build.BlocksPerEpoch)
 
 /**
-	挖矿奖励
-	TODO 需要研究下计算公式的来源
- */
+挖矿奖励
+TODO 需要研究下计算公式的来源
+*/
 // MiningReward returns correct mining reward
 //   coffer is amount of FIL in NetworkAddress
 func MiningReward(remainingReward types.BigInt) types.BigInt {

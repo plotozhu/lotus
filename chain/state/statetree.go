@@ -32,6 +32,7 @@ func NewStateTree(cst *hamt.CborIpldStore) (*StateTree, error) {
 	}, nil
 }
 
+//根据cid从IPLD存储仓库中取出对应的状态树
 func LoadStateTree(cst *hamt.CborIpldStore, c cid.Cid) (*StateTree, error) {
 	nd, err := hamt.LoadNode(context.Background(), cst, c)
 	if err != nil {
@@ -46,6 +47,8 @@ func LoadStateTree(cst *hamt.CborIpldStore, c cid.Cid) (*StateTree, error) {
 	}, nil
 }
 
+// actor比addr多了nonce/balance的记录
+//此函数是设定actor和addr的对应关系
 func (st *StateTree) SetActor(addr address.Address, act *types.Actor) error {
 	iaddr, err := st.LookupID(addr)
 	if err != nil {
@@ -65,11 +68,13 @@ func (st *StateTree) SetActor(addr address.Address, act *types.Actor) error {
 	return st.root.Set(context.TODO(), string(addr.Bytes()), act)
 }
 
+//查看
 func (st *StateTree) LookupID(addr address.Address) (address.Address, error) {
 	if addr.Protocol() == address.ID {
 		return addr, nil
 	}
 
+	//由InitAddress开始读取addr
 	act, err := st.GetActor(actors.InitAddress)
 	if err != nil {
 		return address.Undef, xerrors.Errorf("getting init actor: %w", err)
@@ -144,6 +149,9 @@ func (st *StateTree) Snapshot() error {
 	return nil
 }
 
+/***
+  在状态树上面注册一个地址
+*/
 func (st *StateTree) RegisterNewAddress(addr address.Address, act *types.Actor) (address.Address, error) {
 	var out address.Address
 	err := st.MutateActor(actors.InitAddress, func(initact *types.Actor) error {

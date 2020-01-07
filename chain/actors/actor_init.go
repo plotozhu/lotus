@@ -75,14 +75,18 @@ func CreateExecParams(act cid.Cid, obj cbg.CBORMarshaler) ([]byte, aerrors.Actor
 	})
 }
 
+//调用虚拟机执行，以生成相应的actor，返回相应的actor地址
 func (ia InitActor) Exec(act *types.Actor, vmctx types.VMContext, p *ExecParams) ([]byte, aerrors.ActorError) {
+	//得到state root
 	beginState := vmctx.Storage().GetHead()
 
+	//从state root中恢复数据
 	var self InitActorState
 	if err := vmctx.Storage().Get(beginState, &self); err != nil {
 		return nil, err
 	}
 
+	//虚拟机执行消耗的gas
 	if err := vmctx.ChargeGas(GasCreateActor); err != nil {
 		return nil, aerrors.Wrap(err, "run out of gas")
 	}
@@ -103,12 +107,14 @@ func (ia InitActor) Exec(act *types.Actor, vmctx types.VMContext, p *ExecParams)
 	// reordering
 	creator := vmctx.Message().From
 	nonce := vmctx.Message().Nonce
+	//计算得到actor地址
 	addr, err := ComputeActorAddress(creator, nonce)
 	if err != nil {
 		return nil, err
 	}
 
 	// Set up the actor itself
+	// 空的actor对象
 	actor := types.Actor{
 		Code:    p.Code,
 		Balance: types.NewInt(0),
@@ -159,6 +165,9 @@ func (ia InitActor) Exec(act *types.Actor, vmctx types.VMContext, p *ExecParams)
 	return idAddr.Bytes(), nil
 }
 
+/**
+ * 是否是内置的可用的代码
+ */
 func IsBuiltinActor(code cid.Cid) bool {
 	switch code {
 	case StorageMarketCodeCid, StoragePowerCodeCid, StorageMinerCodeCid, AccountCodeCid, InitCodeCid, MultisigCodeCid, PaymentChannelCodeCid:
@@ -172,32 +181,43 @@ func IsSingletonActor(code cid.Cid) bool {
 	return code == StoragePowerCodeCid || code == StorageMarketCodeCid || code == InitCodeCid || code == CronCodeCid
 }
 
+/**
+  向系统中添加一个actor
+*/
 func (ias *InitActorState) AddActor(cst *hamt.CborIpldStore, addr address.Address) (address.Address, error) {
 	nid := ias.NextID
 
+	//读取节点（状态树根）
 	amap, err := hamt.LoadNode(context.TODO(), cst, ias.AddressMap)
 	if err != nil {
 		return address.Undef, err
 	}
-
+	//在节点中设置nextID
 	if err := amap.Set(context.TODO(), string(addr.Bytes()), nid); err != nil {
 		return address.Undef, err
 	}
 
+	//写入到hamt
 	if err := amap.Flush(context.TODO()); err != nil {
 		return address.Undef, err
 	}
 
+	//在cst中写入这个值，得到新的ID值
 	ncid, err := cst.Put(context.TODO(), amap)
 	if err != nil {
 		return address.Undef, err
 	}
+	//更新记录
 	ias.AddressMap = ncid
 	ias.NextID++
 
+	//生成ACTOR协议 地址
 	return NewIDAddress(nid)
 }
 
+/**
+根据给定的addr寻找记录的ID地址
+*/
 func (ias *InitActorState) Lookup(cst *hamt.CborIpldStore, addr address.Address) (address.Address, error) {
 	amap, err := hamt.LoadNode(context.TODO(), cst, ias.AddressMap)
 	if err != nil {
@@ -222,6 +242,7 @@ type AccountActorState struct {
 	Address address.Address
 }
 
+//根据原始的地址，生成Actor地址
 func ComputeActorAddress(creator address.Address, nonce uint64) (address.Address, ActorError) {
 	buf := new(bytes.Buffer)
 	_, err := buf.Write(creator.Bytes())

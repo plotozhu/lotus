@@ -3,7 +3,6 @@ package types
 import (
 	"context"
 
-
 	"github.com/filecoin-project/go-address"
 
 	"github.com/filecoin-project/go-amt-ipld"
@@ -40,18 +39,18 @@ type StateTree interface {
 这是最基础的虚拟机的上下文
 */
 type VMContext interface {
-	Message() *Message
-	Origin() address.Address
-	Ipld() *hamt.CborIpldStore
-	Send(to address.Address, method uint64, value BigInt, params []byte) ([]byte, aerrors.ActorError)
-	BlockHeight() uint64
-	GasUsed() BigInt
-	Storage() Storage
-	StateTree() (StateTree, aerrors.ActorError)
-	VerifySignature(sig *Signature, from address.Address, data []byte) aerrors.ActorError
-	ChargeGas(uint64) aerrors.ActorError
-	GetRandomness(height uint64) ([]byte, aerrors.ActorError)
-	GetBalance(address.Address) (BigInt, aerrors.ActorError)
+	Message() *Message                                                                                //本次执行的消息
+	Origin() address.Address                                                                          //执行者
+	Ipld() *hamt.CborIpldStore                                                                        //存储的数据根
+	Send(to address.Address, method uint64, value BigInt, params []byte) ([]byte, aerrors.ActorError) //执行发送指令
+	BlockHeight() uint64                                                                              //区块的高度
+	GasUsed() BigInt                                                                                  //执行中使用的GAS
+	Storage() Storage                                                                                 //感觉是区块的数据仓库
+	StateTree() (StateTree, aerrors.ActorError)                                                       //感觉是读取状态树根
+	VerifySignature(sig *Signature, from address.Address, data []byte) aerrors.ActorError             //签名验证
+	ChargeGas(uint64) aerrors.ActorError                                                              //添加使用的GAS
+	GetRandomness(height uint64) ([]byte, aerrors.ActorError)                                         //获取随机数
+	GetBalance(address.Address) (BigInt, aerrors.ActorError)                                          //获得余额
 	Sys() *VMSyscalls
 
 	Context() context.Context
