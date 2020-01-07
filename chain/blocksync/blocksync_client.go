@@ -33,6 +33,9 @@ type BlockSync struct {
 	peerMgr   *peermgr.PeerMgr
 }
 
+/**
+	创建同步客户端
+**/
 func NewBlockSyncClient(bserv dtypes.ChainBlockService, h host.Host, pmgr peermgr.MaybePeerMgr) *BlockSync {
 	return &BlockSync{
 		bserv:     bserv,
@@ -59,6 +62,13 @@ func (bs *BlockSync) processStatus(req *BlockSyncRequest, res *BlockSyncResponse
 	}
 }
 
+/**
+ * 根据tipsetkey获取相应的区块
+ * @tsk tipsetkey对象
+ * @count 从tsk开始，连续取的区块个数
+ *
+ * 这个是请求的区块信息，没有请求message信息，由于区块信息较小，所以可以同时从多个节点中读取
+ */
 func (bs *BlockSync) GetBlocks(ctx context.Context, tsk types.TipSetKey, count int) ([]*types.TipSet, error) {
 	ctx, span := trace.StartSpan(ctx, "bsync.GetBlocks")
 	defer span.End()
@@ -117,13 +127,18 @@ func (bs *BlockSync) GetBlocks(ctx context.Context, tsk types.TipSetKey, count i
 	return nil, xerrors.Errorf("GetBlocks failed with all peers: %w", oerr)
 }
 
+/**
+ * 这个是从某个节点上读取区块的全部信息的
+ * @p 目标节点地址
+ * @tsk tipsetkey
+ */
 func (bs *BlockSync) GetFullTipSet(ctx context.Context, p peer.ID, tsk types.TipSetKey) (*store.FullTipSet, error) {
 	// TODO: round robin through these peers on error
 
 	req := &BlockSyncRequest{
 		Start:         tsk.Cids(),
 		RequestLength: 1,
-		Options:       BSOptBlocks | BSOptMessages,
+		Options:       BSOptBlocks | BSOptMessages, //需要读取Message信息
 	}
 
 	res, err := bs.sendRequestToPeer(ctx, p, req)
@@ -169,6 +184,11 @@ func shufflePrefix(peers []peer.ID) {
 	copy(peers, buf)
 }
 
+/**
+ *
+ * 从附近的节点中读取完整的区块信息（包括messages）
+ *
+ */
 func (bs *BlockSync) GetChainMessages(ctx context.Context, h *types.TipSet, count uint64) ([]*BSTipSet, error) {
 	ctx, span := trace.StartSpan(ctx, "GetChainMessages")
 	defer span.End()
@@ -268,6 +288,9 @@ func (bs *BlockSync) sendRequestToPeer(ctx context.Context, p peer.ID, req *Bloc
 	return &res, nil
 }
 
+/**
+ * 检查是否是连续的一Tipsets
+ */
 func (bs *BlockSync) processBlocksResponse(req *BlockSyncRequest, res *BlockSyncResponse) ([]*types.TipSet, error) {
 	if len(res.Chain) == 0 {
 		return nil, xerrors.Errorf("got no blocks in successful blocksync response")
@@ -317,6 +340,10 @@ func (bs *BlockSync) getPeers() []peer.ID {
 	return bs.syncPeers.prefSortedPeers()
 }
 
+/***
+ *
+ * 根据cid获取相应的message
+ */
 func (bs *BlockSync) FetchMessagesByCids(ctx context.Context, cids []cid.Cid) ([]*types.Message, error) {
 	out := make([]*types.Message, len(cids))
 
@@ -339,6 +366,11 @@ func (bs *BlockSync) FetchMessagesByCids(ctx context.Context, cids []cid.Cid) ([
 	return out, nil
 }
 
+/***
+ *
+ *	根据cid获取签过名的消息
+ *
+ */
 func (bs *BlockSync) FetchSignedMessagesByCids(ctx context.Context, cids []cid.Cid) ([]*types.SignedMessage, error) {
 	out := make([]*types.SignedMessage, len(cids))
 
@@ -361,6 +393,9 @@ func (bs *BlockSync) FetchSignedMessagesByCids(ctx context.Context, cids []cid.C
 	return out, nil
 }
 
+/***
+ * 遍历cids 使用预定义的函数对cids对应的区块进行处理
+ */
 func (bs *BlockSync) fetchCids(ctx context.Context, cids []cid.Cid, cb func(int, blocks.Block) error) error {
 	resp := bs.bserv.GetBlocks(context.TODO(), cids)
 

@@ -15,8 +15,13 @@ import (
 
 var log = logging.Logger("types")
 
+/**
+ *  TipSet是一堆block的集合，在TipSet中只记录了对应的blockheader
+ * 在blockeHeader中记录了这个block体（message)的CIDS
+ *
+ */
 type TipSet struct {
-	cids   []cid.Cid
+	cids   []cid.Cid //block对应的CID
 	blks   []*BlockHeader
 	height uint64
 }

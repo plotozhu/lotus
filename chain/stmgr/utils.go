@@ -183,9 +183,10 @@ func SectorSetSizes(ctx context.Context, sm *StateManager, maddr address.Address
 		Sset: ss.Count,
 	}, nil
 }
+
 /**
-	根据ts获得当前正在proving的扇区
- */
+根据ts获得当前正在proving的扇区
+*/
 func GetMinerProvingSet(ctx context.Context, sm *StateManager, ts *types.TipSet, maddr address.Address) ([]*api.ChainSectorInfo, error) {
 	var mas actors.StorageMinerActorState
 	_, err := sm.LoadActorState(ctx, maddr, &mas, ts)

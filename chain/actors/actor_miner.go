@@ -112,8 +112,8 @@ type SectorPreCommitInfo struct {
 }
 
 /**
-	这是目前所有的链上支持的，对应于存储矿工的操作
- */
+这是目前所有的链上支持的，对应于存储矿工的操作
+*/
 type maMethods struct {
 	Constructor          uint64
 	PreCommitSector      uint64
@@ -140,14 +140,14 @@ type maMethods struct {
 var MAMethods = maMethods{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
 
 /***
-	核心的几个动作
-	StorageMinerConstructor 创建矿工
-	PreCommitSector提交PreCommit
-	ProveCommitSector 提交ProveCommit,然后进入 正式proving状态
-	SubmitFallbackPoSt 这个应该是定时提交，形成Post
-	SubmitElectionPoSt 这个放在最后，明显是后添上去的，e-post
+核心的几个动作
+StorageMinerConstructor 创建矿工
+PreCommitSector提交PreCommit
+ProveCommitSector 提交ProveCommit,然后进入 正式proving状态
+SubmitFallbackPoSt 这个应该是定时提交，形成Post
+SubmitElectionPoSt 这个放在最后，明显是后添上去的，e-post
 
- */
+*/
 func (sma StorageMinerActor) Exports() []interface{} {
 	return []interface{}{
 		1: sma.StorageMinerConstructor,
@@ -234,6 +234,7 @@ func (sma StorageMinerActor) StorageMinerConstructor(act *types.Actor, vmctx typ
 
 	return nil, nil
 }
+
 //收到preCommitSector的命令，为什么没有验证？
 
 func (sma StorageMinerActor) PreCommitSector(act *types.Actor, vmctx types.VMContext, params *SectorPreCommitInfo) ([]byte, ActorError) {
@@ -311,9 +312,10 @@ type SectorProveCommitInfo struct {
 	SectorID uint64
 	DealIDs  []uint64
 }
+
 /***
-	这个应该是commit提交之后的验证
- */
+这个应该是commit提交之后的验证
+*/
 func (sma StorageMinerActor) ProveCommitSectorV0(act *types.Actor, vmctx types.VMContext, params *SectorProveCommitInfo) ([]byte, ActorError) {
 	ctx := vmctx.Context()
 	oldstate, self, err := loadState(vmctx)
@@ -416,9 +418,10 @@ func (sma StorageMinerActor) ProveCommitSectorV0(act *types.Actor, vmctx types.V
 	_, err = vmctx.Send(StorageMarketAddress, SMAMethods.ActivateStorageDeals, types.NewInt(0), activateParams)
 	return nil, aerrors.Wrapf(err, "calling ActivateStorageDeals failed")
 }
+
 /***
-	其实是ProCommit的证明过程
- */
+其实是ProCommit的证明过程
+*/
 func (sma StorageMinerActor) ProveCommitSectorV1(act *types.Actor, vmctx types.VMContext, params *SectorProveCommitInfo) ([]byte, ActorError) {
 	ctx := vmctx.Context()
 	oldstate, self, err := loadState(vmctx)

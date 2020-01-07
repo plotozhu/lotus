@@ -49,13 +49,17 @@ func (spa StoragePowerActor) Exports() []interface{} {
 	}
 }
 
+/**
+ * 存储能力的总状态
+ *
+ */
 type StoragePowerState struct {
-	Miners         cid.Cid
+	Miners         cid.Cid //记录了所有的矿工
 	ProvingBuckets cid.Cid // amt[ProvingPeriodBucket]hamt[minerAddress]struct{}
-	MinerCount     uint64
-	LastMinerCheck uint64
+	MinerCount     uint64  // miner的总数
+	LastMinerCheck uint64  //上次的数据
 
-	TotalStorage types.BigInt
+	TotalStorage types.BigInt //全网总功率
 }
 
 type CreateStorageMinerParams struct {
@@ -64,9 +68,10 @@ type CreateStorageMinerParams struct {
 	SectorSize uint64
 	PeerID     peer.ID
 }
+
 /**
-	创建存储矿工，这个是响应执行创建矿工的命令的过程，因此会根据vmctx的消息处理
- */
+创建存储矿工，这个是响应执行创建矿工的命令的过程，因此会根据vmctx的消息处理
+*/
 func (spa StoragePowerActor) CreateStorageMiner(act *types.Actor, vmctx types.VMContext, params *CreateStorageMinerParams) ([]byte, ActorError) {
 	if !build.SupportedSectorSize(params.SectorSize) {
 		return nil, aerrors.New(1, "Unsupported sector size")
@@ -137,6 +142,7 @@ type ArbitrateConsensusFaultParams struct {
 	Block1 *types.BlockHeader
 	Block2 *types.BlockHeader
 }
+
 //共识故障时的仲裁，同一个Miner出了两个同高度的区块
 //QZ TODO 什么时候调用？作用？
 func (spa StoragePowerActor) ArbitrateConsensusFault(act *types.Actor, vmctx types.VMContext, params *ArbitrateConsensusFaultParams) ([]byte, ActorError) {
@@ -281,8 +287,10 @@ type UpdateStorageParams struct {
 	NextSlashDeadline     uint64
 	PreviousSlashDeadline uint64
 }
+
 /**
-	更新存储
+ * 更新存储信息
+ *
  */
 func (spa StoragePowerActor) UpdateStorage(act *types.Actor, vmctx types.VMContext, params *UpdateStorageParams) ([]byte, ActorError) {
 	var self StoragePowerState
@@ -528,8 +536,8 @@ func (spa StoragePowerActor) PledgeCollateralForSize(act *types.Actor, vmctx typ
 }
 
 /**
-	提交存储抵押
- */
+提交存储抵押
+*/
 func pledgeCollateralForSize(vmctx types.VMContext, size, totalStorage types.BigInt, minerCount uint64) (types.BigInt, aerrors.ActorError) {
 	//NetworkAddress 是1， 固定的地址
 	//这个就是得到网络里的存储池里的余额
@@ -583,9 +591,10 @@ func pledgeCollateralForSize(vmctx types.VMContext, size, totalStorage types.Big
 
 	return types.BigAdd(powerCollateral, perCapCollateral), nil
 }
+
 /***
-	检查 提交的证明
- */
+检查 提交的证明
+*/
 func (spa StoragePowerActor) CheckProofSubmissions(act *types.Actor, vmctx types.VMContext, param *struct{}) ([]byte, ActorError) {
 	if vmctx.Message().From != CronAddress {
 		return nil, aerrors.New(1, "CheckProofSubmissions is only callable from the cron actor")

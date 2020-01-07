@@ -53,6 +53,10 @@ type ChainStore struct {
 	tsCache *lru.ARCCache
 }
 
+/**
+ * 存储链的区块信息的库
+ *
+ */
 func NewChainStore(bs bstore.Blockstore, ds dstore.Batching) *ChainStore {
 	c, _ := lru.NewARC(2048)
 	tsc, _ := lru.NewARC(4096)
