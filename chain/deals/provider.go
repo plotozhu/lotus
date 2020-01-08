@@ -13,7 +13,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/go-cbor-util"
+	cborutil "github.com/filecoin-project/go-cbor-util"
 	"github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/chain/actors"
 	"github.com/filecoin-project/lotus/chain/types"
@@ -83,7 +83,10 @@ var (
 	ErrDataTransferFailed = errors.New("deal data transfer failed")
 )
 
-func NewProvider(ds dtypes.MetadataDS, sminer *storage.Miner, secb *sectorblocks.SectorBlocks, dag dtypes.StagingDAG, dataTransfer dtypes.ProviderDataTransfer, fullNode api.FullNode) (*Provider, error) {
+/**
+ * Storage Provider
+ */
+func NewStorageProvider(ds dtypes.MetadataDS, sminer *storage.Miner, secb *sectorblocks.SectorBlocks, dag dtypes.StagingDAG, dataTransfer dtypes.ProviderDataTransfer, fullNode api.FullNode) (*Provider, error) {
 	addr, err := ds.Get(datastore.NewKey("miner-address"))
 	if err != nil {
 		return nil, err

@@ -12,7 +12,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/go-cbor-util"
+	cborutil "github.com/filecoin-project/go-cbor-util"
 	"github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/build"
 	"github.com/filecoin-project/lotus/chain/types"

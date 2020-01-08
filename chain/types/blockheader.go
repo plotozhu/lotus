@@ -56,8 +56,21 @@ type BlockHeader struct {
 	Timestamp uint64
 
 	BlockSig *Signature
+
+	VoteInfo Vote
 }
 
+/**
+ * 投票信息
+ */
+type Vote struct {
+	voters       BitField
+	BLSAggregate Signature
+}
+
+/**
+ *
+ */
 func (b *BlockHeader) ToStorageBlock() (block.Block, error) {
 	data, err := b.Serialize()
 	if err != nil {

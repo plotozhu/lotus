@@ -249,13 +249,13 @@ func Online() Option {
 			Override(new(dtypes.ProviderDealStore), modules.NewProviderDealStore),
 			Override(new(dtypes.ProviderDataTransfer), modules.NewProviderDAGServiceDataTransfer),
 			Override(new(*deals.ProviderRequestValidator), deals.NewProviderRequestValidator),
-			Override(new(*deals.Provider), deals.NewProvider),
+			Override(new(*deals.Provider), deals.NewStorageProvider),
 			Override(RegisterProviderValidatorKey, modules.RegisterProviderValidator),
 			Override(HandleRetrievalKey, modules.HandleRetrieval),
 			Override(GetParamsKey, modules.GetParams),
 			Override(HandleDealsKey, modules.HandleDeals),
 			Override(new(gen.ElectionPoStProver), storage.NewElectionPoStProver),
-			Override(new(*miner.Miner), modules.SetupBlockProducer),
+			Override(new(*miner.Miner), modules.SetupStorageMiner),
 		),
 	)
 }

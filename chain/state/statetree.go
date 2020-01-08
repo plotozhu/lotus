@@ -150,8 +150,8 @@ func (st *StateTree) Snapshot() error {
 }
 
 /***
-  在状态树上面注册一个地址
-*/
+ * 在状态树上面注册一个地址
+ */
 func (st *StateTree) RegisterNewAddress(addr address.Address, act *types.Actor) (address.Address, error) {
 	var out address.Address
 	err := st.MutateActor(actors.InitAddress, func(initact *types.Actor) error {
@@ -185,6 +185,9 @@ func (st *StateTree) RegisterNewAddress(addr address.Address, act *types.Actor) 
 	return out, nil
 }
 
+/**
+ *
+ */
 func (st *StateTree) Revert() error {
 	nd, err := hamt.LoadNode(context.Background(), st.Store, st.snapshot)
 	if err != nil {
@@ -195,6 +198,9 @@ func (st *StateTree) Revert() error {
 	return nil
 }
 
+/**
+ *
+ */
 func (st *StateTree) MutateActor(addr address.Address, f func(*types.Actor) error) error {
 	act, err := st.GetActor(addr)
 	if err != nil {

@@ -182,7 +182,7 @@ func StagingDAG(mctx helpers.MetricsCtx, lc fx.Lifecycle, r repo.LockedRepo, rt 
 	return dag, nil
 }
 
-func SetupBlockProducer(lc fx.Lifecycle, ds dtypes.MetadataDS, api api.FullNode, epp gen.ElectionPoStProver) (*miner.Miner, error) {
+func SetupStorageMiner(lc fx.Lifecycle, ds dtypes.MetadataDS, api api.FullNode, epp gen.ElectionPoStProver) (*miner.Miner, error) {
 	minerAddr, err := minerAddrFromDS(ds)
 	if err != nil {
 		return nil, err
