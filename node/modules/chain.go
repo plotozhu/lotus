@@ -54,9 +54,10 @@ func MessagePool(lc fx.Lifecycle, sm *stmgr.StateManager, ps *pubsub.PubSub, ds 
 	})
 	return mp, nil
 }
+
 /**
-	存储区块的数据仓库
- */
+存储区块的数据仓库
+*/
 func ChainBlockstore(r repo.LockedRepo) (dtypes.ChainBlockstore, error) {
 	blocks, err := r.Datastore("/blocks")
 	if err != nil {

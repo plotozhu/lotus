@@ -16,7 +16,7 @@ import (
 )
 
 func (w *worker) fetch(typ string, sectorID uint64) error {
-	return nil;
+	return nil
 	outname := filepath.Join(w.repo, typ, w.sb.SectorName(sectorID))
 
 	url := w.minerEndpoint + "/remote/" + typ + "/" + w.sb.SectorName(sectorID)
@@ -69,7 +69,7 @@ func (w *worker) fetch(typ string, sectorID uint64) error {
 }
 
 func (w *worker) push(typ string, sectorID uint64) error {
-	return nil;
+	return nil
 	filename := filepath.Join(w.repo, typ, w.sb.SectorName(sectorID))
 
 	url := w.minerEndpoint + "/remote/" + typ + "/" + w.sb.SectorName(sectorID)

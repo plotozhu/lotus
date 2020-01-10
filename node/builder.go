@@ -211,10 +211,12 @@ func Online() Option {
 			Override(new(modules.Genesis), modules.ErrorGenesis),
 			Override(SetGenesisKey, modules.SetGenesis),
 
+			//block sync service
 			Override(new(*hello.Service), hello.NewHelloService),
 			Override(new(*blocksync.BlockSyncService), blocksync.NewBlockSyncService),
 			Override(new(*peermgr.PeerMgr), peermgr.NewPeerMgr),
 
+			//block sync client
 			Override(RunHelloKey, modules.RunHello),
 			Override(RunBlockSyncKey, modules.RunBlockSync),
 			Override(RunPeerMgrKey, modules.RunPeerMgr),

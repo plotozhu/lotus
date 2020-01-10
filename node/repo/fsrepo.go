@@ -39,6 +39,7 @@ const (
 	_                 = iota // Default is invalid
 	FullNode RepoType = iota
 	StorageMiner
+	FullNodeV2
 )
 
 func defConfForType(t RepoType) interface{} {

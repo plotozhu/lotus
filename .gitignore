@@ -31,3 +31,4 @@ build/paramfetch.sh
 bin/ipget
 bin/tmp/*
 .idea
+.drawio-chrome
