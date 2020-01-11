@@ -11,7 +11,7 @@ require (
 	github.com/docker/go-units v0.4.0
 	github.com/fatih/color v1.7.0 // indirect
 	github.com/filecoin-project/chain-validation v0.0.3
-	github.com/filecoin-project/filecoin-ffi v0.0.0-20191213130254-f261762ff8ed
+	github.com/filecoin-project/filecoin-ffi v0.0.0-20191221090835-c7bbef445934
 	github.com/filecoin-project/go-address v0.0.0-20191219011437-af739c490b4f
 	github.com/filecoin-project/go-amt-ipld v0.0.0-20191205011053-79efc22d6cdc
 	github.com/filecoin-project/go-cbor-util v0.0.0-20191219014500-08c40a1e63a2
