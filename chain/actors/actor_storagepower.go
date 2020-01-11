@@ -449,6 +449,10 @@ type PowerLookupParams struct {
 	Miner address.Address
 }
 
+/**
+查看设备存储能力
+*/
+
 func (spa StoragePowerActor) PowerLookup(act *types.Actor, vmctx types.VMContext, params *PowerLookupParams) ([]byte, ActorError) {
 	var self StoragePowerState
 	if err := vmctx.Storage().Get(vmctx.Storage().GetHead(), &self); err != nil {

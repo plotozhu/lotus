@@ -45,7 +45,7 @@ type VMContext interface {
 	Send(to address.Address, method uint64, value BigInt, params []byte) ([]byte, aerrors.ActorError) //执行发送指令
 	BlockHeight() uint64                                                                              //区块的高度
 	GasUsed() BigInt                                                                                  //执行中使用的GAS
-	Storage() Storage                                                                                 //感觉是区块的数据仓库
+	Storage() Storage                                                                                 //记录的存储信息
 	StateTree() (StateTree, aerrors.ActorError)                                                       //感觉是读取状态树根
 	VerifySignature(sig *Signature, from address.Address, data []byte) aerrors.ActorError             //签名验证
 	ChargeGas(uint64) aerrors.ActorError                                                              //添加使用的GAS

@@ -353,6 +353,7 @@ func SetupStorageMiners(ctx context.Context, cs *store.ChainStore, sroot cid.Cid
 		}
 		mstate.Power = types.BigMul(types.NewInt(ps.SectorSize), types.NewInt(uint64(len(ps.Sectors))))
 
+		log
 		blks := amt.WrapBlockstore(cs.Blockstore())
 
 		for _, s := range ps.Sectors {

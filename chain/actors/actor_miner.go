@@ -438,6 +438,9 @@ func (sma StorageMinerActor) ProveCommitSectorV1(act *types.Actor, vmctx types.V
 		return nil, aerrors.New(1, "not authorized to submit sector proof for miner")
 	}
 
+	faults := self.FaultSet
+	cnt, _ := faults.Count()
+	log.Infof("[qz actor_miner]:Delcared fault sectore:%d", cnt)
 	//us 是记录的PreCommitted的数据
 	us, ok := self.PreCommittedSectors[uintToStringKey(params.SectorID)]
 	if !ok {
@@ -1182,6 +1185,7 @@ func onSuccessfulPoStV1(self *StorageMinerActorState, vmctx types.VMContext) aer
 
 	// If below the minimum size requirement, miners have zero power
 	if newPower.LessThan(types.NewInt(build.MinimumMinerPower)) {
+
 		newPower = types.NewInt(0)
 	}
 
