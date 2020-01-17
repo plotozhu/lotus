@@ -197,9 +197,9 @@ func (hs *TransPushPullService) pushHash(p peer.ID, hash [CommHashLen]byte) erro
 }
 
 //SendToPeers is used to send data to a series of peers
-func (hs *TransPushPullService) SendToPeers(peers []peer.ID, handle string, data []byte) {
+func (hs *TransPushPullService) SendToPeers(peers []*peer.ID, handle string, data []byte) {
 	for _, peerID := range peers {
-		hs.SendToPeer(peerID, handle, data)
+		hs.SendToPeer(*peerID, handle, data)
 	}
 }
 
