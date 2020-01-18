@@ -1,4 +1,4 @@
-package util
+package rtutil
 
 import (
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -17,7 +17,7 @@ func Dist(p1, p2 peer.ID) int {
 			leadZero += 8
 		} else {
 			for j := 7; j >= 0; j-- {
-				if (1<<j)&res == 0 {
+				if ((1 << j) & res) != 0 {
 					break
 				} else {
 					leadZero++
