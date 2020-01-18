@@ -68,7 +68,7 @@ type TransPushPullService struct {
 }
 
 // StreamProcessor is used for process actual byte stream
-type StreamProcessor func([]byte) error
+type StreamProcessor func(sender peer.ID, data []byte) error
 
 //HandleStream 对流量进行的处理
 func (hs *TransPushPullService) HandleStream(s network.Stream) {
@@ -91,16 +91,16 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 		}
 	case CmdPushHash:
 		if !hs.receivedHashes.Contains(value.Hash) {
-			hs.sendStream(s, MsgPushPullData{CmdPullHash, value.Hash, nil})
+			hs.sendStream(s, MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
 		}
 	case CmdPushData:
 		if !hs.receivedHashes.Contains(value.Hash) {
 			hs.receivedHashes.Add(value.Hash, true)
 			handles, _ := hs.procHandle.Load(value.Handle)
-			for _, handleProc := range handles.([]StreamProcessor) {
-				go func(v []byte) {
-					handleProc(v)
-				}(value.Data)
+			for _, doHandleProc := range handles.([]StreamProcessor) {
+				go func(thisPeer peer.ID, v []byte) {
+					doHandleProc(thisPeer, v)
+				}(hs.host.ID(), value.Data)
 			}
 		}
 	}
