@@ -2,6 +2,8 @@ package transpp
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,7 +44,7 @@ const (
 //MsgPushPullData is content format of push/pull
 type MsgPushPullData struct {
 	CommandID uint8
-	Hash      [CommHashLen]byte
+	Hash      []byte
 	Handle    []byte
 	Data      []byte
 }
@@ -68,7 +70,11 @@ type TransPushPullService struct {
 }
 
 // StreamProcessor is used for process actual byte stream
-type StreamProcessor func(sender peer.ID, data []byte) error
+type StreamProcessor func(sender peer.ID, data []byte, info interface{}) error
+type HandleItem struct {
+	handle StreamProcessor
+	pInfo  interface{}
+}
 
 //HandleStream 对流量进行的处理
 func (hs *TransPushPullService) HandleStream(s network.Stream) {
@@ -80,26 +86,30 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 	if err != nil {
 		return
 	}
+	hashStr := string(value.Hash)
 	switch value.CommandID {
 	case CmdPullHash:
-		if hs.pendingData.Contains(value.Hash) {
-			data, ok := hs.pendingData.Get(value.Hash)
+		if hs.pendingData.Contains(hashStr) {
+			data, ok := hs.pendingData.Get(hashStr)
 			if ok {
 				data2 := data.(*DataHandle)
 				hs.sendStream(s, MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
 			}
 		}
 	case CmdPushHash:
-		if !hs.receivedHashes.Contains(value.Hash) {
-			hs.sendStream(s, MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
+		if !hs.receivedHashes.Contains(hashStr) {
+			hs.sendStream(s, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
 		}
 	case CmdPushData:
-		if !hs.receivedHashes.Contains(value.Hash) {
-			hs.receivedHashes.Add(value.Hash, true)
-			handles, _ := hs.procHandle.Load(value.Handle)
-			for _, doHandleProc := range handles.([]StreamProcessor) {
+		if value.Hash == nil || !hs.receivedHashes.Contains(value.Hash) {
+			if value.Hash != nil {
+				hs.receivedHashes.Add(value.Hash, true)
+			}
+
+			handles, _ := hs.procHandle.Load(string(value.Handle))
+			for _, handle := range handles.([]*HandleItem) {
 				go func(thisPeer peer.ID, v []byte) {
-					doHandleProc(thisPeer, v)
+					handle.handle(thisPeer, v, handle.pInfo)
 				}(hs.host.ID(), value.Data)
 			}
 		}
@@ -107,33 +117,38 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 }
 
 //NewTransPushPullTransfer creating a push/pull object
-func NewTransPushPullTransfer(h host.Host, pstore peerstore.Peerstore) *TransPushPullService {
+func NewTransPushPullTransfer(h host.Host /*, pstore peerstore.Peerstore*/) *TransPushPullService {
 	cache, _ := lru.New(CacheOfData)
 	rcaches, _ := lru.New(CacheOfHashes)
-	return &TransPushPullService{
+
+	tps := &TransPushPullService{
 		host:           h,
-		pstore:         pstore,
+		pstore:         h.Peerstore(),
 		pendingData:    cache,
 		receivedHashes: rcaches,
 	}
+	h.SetStreamHandler(PPTransProtocolID, tps.HandleStream)
+	return tps
+
 }
 
 //RegisterHandle is used to add a processor for handle, callback is invoked in go routine
-func (hs *TransPushPullService) RegisterHandle(handle string, callback StreamProcessor) error {
-	rawHandles, _ := hs.procHandle.Load(handle)
-	handles := rawHandles.([]StreamProcessor)
-	if handles == nil {
-		handles = append([]StreamProcessor{}, callback)
+func (hs *TransPushPullService) RegisterHandle(handle string, callback StreamProcessor, info interface{}) error {
+	rawHandles, ok := hs.procHandle.Load(handle)
+	var handles []*HandleItem
+	if !ok {
+		handles = append([]*HandleItem{}, &HandleItem{callback, info})
 	} else {
+		handles := rawHandles.([]*HandleItem)
 		exists := false
 		for _, handle := range handles {
-			if &handle == &callback {
+			if &handle.handle == &callback {
 				exists = true
 				break
 			}
 		}
 		if !exists {
-			handles = append(handles, callback)
+			handles = append(handles, &HandleItem{callback, info})
 		} else {
 			return xerrors.Errorf("This handle has been registered")
 		}
@@ -145,13 +160,13 @@ func (hs *TransPushPullService) RegisterHandle(handle string, callback StreamPro
 //UngisterHandle unregister a handle from push/pull system
 func (hs *TransPushPullService) UngisterHandle(handle string, callback StreamProcessor) error {
 	rawHandles, _ := hs.procHandle.Load(handle)
-	handles := rawHandles.([]StreamProcessor)
+	handles := rawHandles.([]*HandleItem)
 	if handles == nil {
 		return xerrors.Errorf("This handle is not registered")
 	} else {
 		exists := false
 		for index, handle := range handles {
-			if &handle == &callback {
+			if &handle.handle == &callback {
 				if index == 0 {
 					handles = handles[1:]
 				} else if index == len(handles)-1 {
@@ -172,27 +187,23 @@ func (hs *TransPushPullService) UngisterHandle(handle string, callback StreamPro
 }
 
 func (hs *TransPushPullService) sendStream(s network.Stream, value interface{}) error {
-	s.SetDeadline(time.Now().Add(10 * time.Second))
-	defer s.SetDeadline(time.Time{})
+	defer s.SetDeadline(time.Now().Add(10 * time.Second))
+	//	defer s.SetDeadline(time.Time{})
 	enc := cbor.NewEncoder(s, cbor.CanonicalEncOptions())
 
 	err := enc.Encode(value)
 	return err
 }
 func (hs *TransPushPullService) createSendStream(p peer.ID, value interface{}) error {
-	s, err := hs.host.NewStream(network.WithNoDial(context.Background(), "should already have connection"), p, PPTransProtocolID)
+	s, err := hs.host.NewStream(context.Background(), p, PPTransProtocolID)
 	if err != nil {
 		//	hs.pmgr.RemovePeer(p)
 		return xerrors.Errorf("failed to open stream to peer: %w", err)
 	}
-	s.SetDeadline(time.Now().Add(10 * time.Second))
-	defer s.SetDeadline(time.Time{})
-	enc := cbor.NewEncoder(s, cbor.CanonicalEncOptions())
 
-	err = enc.Encode(value)
-	return err
+	return hs.sendStream(s, value)
 }
-func (hs *TransPushPullService) pushHash(p peer.ID, hash [CommHashLen]byte) error {
+func (hs *TransPushPullService) pushHash(p peer.ID, hash []byte) error {
 	return hs.createSendStream(p, MsgPushPullData{CmdPushHash, hash, nil, nil})
 }
 
@@ -205,14 +216,19 @@ func (hs *TransPushPullService) SendToPeers(peers []*peer.ID, handle string, dat
 
 //SendToPeer send data to peerId, data with length < 4*CommHashLen will be send directly, otherwise it will be send by push/pull machenism
 func (hs *TransPushPullService) SendToPeer(peerID peer.ID, handle string, data []byte) {
+	var err error
 	if len(data) > 4*CommHashLen {
 		hash := doHash(data)
-		hashData := [CommHashLen]byte{}
+		hashData := make([]byte, CommHashLen)
 		copy(hashData[:], hash[:CommHashLen])
-		hs.pendingData.Add(hashData, &DataHandle{[]byte(handle), data})
-		hs.pushHash(peerID, hashData)
+		hs.pendingData.Add(string(hashData), &DataHandle{[]byte(handle), data})
+		err = hs.pushHash(peerID, hashData)
 	} else {
-		hs.createSendStream(peerID, &DataHandle{[]byte(handle), data})
+		err = hs.createSendStream(peerID, MsgPushPullData{CmdPushData, nil, []byte(handle), data})
+	}
+
+	if err != nil {
+		fmt.Println(fmt.Sprintf("error in Sending to peer: %v", err))
 	}
 
 }
@@ -223,6 +239,9 @@ func (hs *TransPushPullService) _SendToPeerAndWait(peerID peer.ID, data []byte) 
 //SendToAllNeighbours send data to its all neighbours
 func (hs *TransPushPullService) SendToAllNeighbours(handle string, data []byte) {
 	for _, peerID := range hs.pstore.Peers() {
-		hs.SendToPeer(peerID, handle, data)
+		if strings.Compare(peerID.Pretty(), hs.host.ID().Pretty()) != 0 {
+			hs.SendToPeer(peerID, handle, data)
+		}
+
 	}
 }
