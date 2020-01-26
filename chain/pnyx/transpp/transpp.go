@@ -93,12 +93,24 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 			data, ok := hs.pendingData.Get(hashStr)
 			if ok {
 				data2 := data.(*DataHandle)
-				hs.sendStream(s, MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
+				retStream, err := s.Conn().NewStream()
+				if err == nil {
+					hs.sendStream(retStream, MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
+				} else {
+					fmt.Errorf("This handle is not registered")
+				}
+
 			}
 		}
 	case CmdPushHash:
 		if !hs.receivedHashes.Contains(hashStr) {
-			hs.sendStream(s, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
+			retStream, err := s.Conn().NewStream()
+			if err == nil {
+				hs.sendStream(retStream, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
+			} else {
+				fmt.Errorf("This handle is not registered")
+			}
+
 		}
 	case CmdPushData:
 		if value.Hash == nil || !hs.receivedHashes.Contains(value.Hash) {
@@ -189,9 +201,10 @@ func (hs *TransPushPullService) UngisterHandle(handle string, callback StreamPro
 func (hs *TransPushPullService) sendStream(s network.Stream, value interface{}) error {
 	defer s.SetDeadline(time.Now().Add(10 * time.Second))
 	//	defer s.SetDeadline(time.Time{})
-	enc := cbor.NewEncoder(s, cbor.CanonicalEncOptions())
+	enc, err := cbor.Marshal(value, cbor.CanonicalEncOptions())
 
-	err := enc.Encode(value)
+	//	err := enc.Encode(value)
+	s.Write(enc)
 	return err
 }
 func (hs *TransPushPullService) createSendStream(p peer.ID, value interface{}) error {
