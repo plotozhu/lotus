@@ -119,8 +119,6 @@ func TestConnection(t *testing.T) {
 	}
 	//srvs[1].SendToAllNeighbours("/test1/short", []byte{0x17})
 
-	exit := make(chan struct{})
-
-	exit <- struct{}{}
+	select {}
 
 }

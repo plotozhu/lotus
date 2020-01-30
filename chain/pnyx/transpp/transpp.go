@@ -1,11 +1,12 @@
 package transpp
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fxamacker/cbor"
 	lru "github.com/hashicorp/golang-lru"
@@ -19,7 +20,7 @@ import (
 
 const (
 	//PPTransProtocolID is the protocolID for Push/Pull algorithm
-	PPTransProtocolID = "/pnyx/pptrans/0.1/"
+	PPTransProtocolID = "/pnyx/ppt/0.1/"
 )
 const (
 	//None
@@ -60,6 +61,11 @@ func doHash(b []byte) []byte {
 	return s[:]
 }
 
+type rwInfo struct {
+	rw *bufio.ReadWriter
+	q  chan interface{}
+}
+
 //TransPushPullService basic interface
 type TransPushPullService struct {
 	host           host.Host
@@ -67,6 +73,8 @@ type TransPushPullService struct {
 	pendingData    *lru.Cache
 	receivedHashes *lru.Cache
 	procHandle     sync.Map
+	writeChan      map[network.Stream]*rwInfo
+	wcmutex        sync.Mutex
 }
 
 // StreamProcessor is used for process actual byte stream
@@ -76,14 +84,29 @@ type HandleItem struct {
 	pInfo  interface{}
 }
 
-//HandleStream 对流量进行的处理
 func (hs *TransPushPullService) HandleStream(s network.Stream) {
-	dec := cbor.NewDecoder(s)
+	log.Println("Got a new stream!")
 
-	// decode into empty interface
+	// Create a buffer stream for non blocking read and write.
+	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
+
+	rwinfo := rwInfo{rw, make(chan interface{}, 10)}
+	hs.wcmutex.Lock()
+	hs.writeChan[s] = &rwinfo
+	hs.wcmutex.Unlock()
+	go hs.readDataRoutine(&rwinfo)
+	go hs.writeDataRoutine(context.Background(), &rwinfo)
+}
+
+//HandleStream 对流量进行的处理
+func (hs *TransPushPullService) readDataRoutine(rwinfo *rwInfo) {
+
+	dec := cbor.NewDecoder(rwinfo.rw.Reader)
+
 	value := MsgPushPullData{}
 	err := dec.Decode(&value)
 	if err != nil {
+		fmt.Errorf("error in read data:%v", err)
 		return
 	}
 	hashStr := string(value.Hash)
@@ -93,9 +116,10 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 			data, ok := hs.pendingData.Get(hashStr)
 			if ok {
 				data2 := data.(*DataHandle)
-				retStream, err := s.Conn().NewStream()
+
 				if err == nil {
-					hs.sendStream(retStream, MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
+					hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
+					log.Println("on pull hash:", value.Hash)
 				} else {
 					fmt.Errorf("This handle is not registered")
 				}
@@ -104,9 +128,9 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 		}
 	case CmdPushHash:
 		if !hs.receivedHashes.Contains(hashStr) {
-			retStream, err := s.Conn().NewStream()
 			if err == nil {
-				hs.sendStream(retStream, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
+				hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
+				log.Println("on push hash:", value.Hash)
 			} else {
 				fmt.Errorf("This handle is not registered")
 			}
@@ -117,7 +141,7 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 			if value.Hash != nil {
 				hs.receivedHashes.Add(value.Hash, true)
 			}
-
+			log.Println("on push data:", value.Hash)
 			handles, _ := hs.procHandle.Load(string(value.Handle))
 			for _, handle := range handles.([]*HandleItem) {
 				go func(thisPeer peer.ID, v []byte) {
@@ -126,6 +150,49 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 			}
 		}
 	}
+}
+
+//写过程，接收队列的数据，然后把数据放进去
+func (hs *TransPushPullService) writeDataRoutine(ctx context.Context, rwinfo *rwInfo) {
+	go func(rw *rwInfo) {
+		for {
+			select {
+			case data := <-rwinfo.q:
+				enc, err := cbor.Marshal(data, cbor.CanonicalEncOptions())
+
+				if err != nil {
+					fmt.Println(fmt.Sprintf("error in encoding data:%v", err))
+				} else {
+					log.Println(">>Write data:", data)
+					rw.rw.Write(enc)
+					rw.rw.Flush()
+				}
+			case <-ctx.Done():
+				return
+
+			}
+		}
+
+	}(rwinfo)
+}
+
+func (hs *TransPushPullService) sendDataToRw(rwinfo *rwInfo, data interface{}) {
+
+	go func() {
+		rwinfo.q <- data
+	}()
+
+}
+func (hs *TransPushPullService) sendDataToStream(s network.Stream, data interface{}) {
+	hs.wcmutex.Lock()
+	channel, ok := hs.writeChan[s]
+	hs.wcmutex.Unlock()
+	if ok {
+		channel.q <- data
+	} else {
+		fmt.Errorf("error in sendStream: no rwInfo")
+	}
+
 }
 
 //NewTransPushPullTransfer creating a push/pull object
@@ -138,6 +205,7 @@ func NewTransPushPullTransfer(h host.Host /*, pstore peerstore.Peerstore*/) *Tra
 		pstore:         h.Peerstore(),
 		pendingData:    cache,
 		receivedHashes: rcaches,
+		writeChan:      make(map[network.Stream]*rwInfo),
 	}
 	h.SetStreamHandler(PPTransProtocolID, tps.HandleStream)
 	return tps
@@ -198,33 +266,35 @@ func (hs *TransPushPullService) UngisterHandle(handle string, callback StreamPro
 	return nil
 }
 
-func (hs *TransPushPullService) sendStream(s network.Stream, value interface{}) error {
-	defer s.SetDeadline(time.Now().Add(10 * time.Second))
-	//	defer s.SetDeadline(time.Time{})
-	enc, err := cbor.Marshal(value, cbor.CanonicalEncOptions())
-
-	//	err := enc.Encode(value)
-	s.Write(enc)
-	return err
-}
-func (hs *TransPushPullService) createSendStream(p peer.ID, value interface{}) error {
+//createStream，当节点之间还没有创建流的时候，可以使用此方式进行创建
+func (hs *TransPushPullService) getRwInfo(p peer.ID) *rwInfo {
+	//go func() {
 	s, err := hs.host.NewStream(context.Background(), p, PPTransProtocolID)
 	if err != nil {
 		//	hs.pmgr.RemovePeer(p)
-		return xerrors.Errorf("failed to open stream to peer: %w", err)
+		fmt.Errorf("failed to open stream to peer: %w", err)
 	}
 
-	return hs.sendStream(s, value)
-}
-func (hs *TransPushPullService) pushHash(p peer.ID, hash []byte) error {
-	return hs.createSendStream(p, MsgPushPullData{CmdPushHash, hash, nil, nil})
-}
+	hs.wcmutex.Lock()
+	rwinfo, ok := hs.writeChan[s]
+	hs.wcmutex.Unlock()
+	if !ok {
+		// Turn the destination into a multiaddr.
 
-//SendToPeers is used to send data to a series of peers
-func (hs *TransPushPullService) SendToPeers(peers []*peer.ID, handle string, data []byte) {
-	for _, peerID := range peers {
-		hs.SendToPeer(*peerID, handle, data)
+		// Add the destination's peer multiaddress in the peerstore.
+		// This will be used during connection and stream creation by libp2p.
+
+		rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
+		new_rwinfo := rwInfo{rw, make(chan interface{}, 10)}
+		hs.writeChan[s] = &new_rwinfo
+		// Create a thread to read and write data.
+		go hs.writeDataRoutine(context.Background(), &new_rwinfo)
+		go hs.readDataRoutine(&new_rwinfo)
+		return &new_rwinfo
+	} else {
+		return rwinfo
 	}
+
 }
 
 //SendToPeer send data to peerId, data with length < 4*CommHashLen will be send directly, otherwise it will be send by push/pull machenism
@@ -237,7 +307,12 @@ func (hs *TransPushPullService) SendToPeer(peerID peer.ID, handle string, data [
 		hs.pendingData.Add(string(hashData), &DataHandle{[]byte(handle), data})
 		err = hs.pushHash(peerID, hashData)
 	} else {
-		err = hs.createSendStream(peerID, MsgPushPullData{CmdPushData, nil, []byte(handle), data})
+		rwinfo := hs.getRwInfo(peerID)
+		if rwinfo != nil {
+			hs.sendDataToRw(rwinfo, MsgPushPullData{CmdPushData, nil, []byte(handle), data})
+		} else {
+			fmt.Errorf("get rwinfo failed")
+		}
 	}
 
 	if err != nil {
@@ -256,5 +331,22 @@ func (hs *TransPushPullService) SendToAllNeighbours(handle string, data []byte) 
 			hs.SendToPeer(peerID, handle, data)
 		}
 
+	}
+}
+func (hs *TransPushPullService) pushHash(p peer.ID, hash []byte) error {
+	rwinfo := hs.getRwInfo(p)
+	if rwinfo != nil {
+		hs.sendDataToRw(rwinfo, MsgPushPullData{CmdPushHash, hash, nil, nil})
+	} else {
+		err := fmt.Errorf("push hash failed,no rwinfo")
+		return err
+	}
+	return nil
+}
+
+//SendToPeers is used to send data to a series of peers
+func (hs *TransPushPullService) SendToPeers(peers []*peer.ID, handle string, data []byte) {
+	for _, peerID := range peers {
+		hs.SendToPeer(*peerID, handle, data)
 	}
 }
