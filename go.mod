@@ -9,7 +9,6 @@ require (
 	github.com/Gurpartap/async v0.0.0-20180927173644-4f7f499dd9ee
 	github.com/StackExchange/wmi v0.0.0-20190523213315-cbe66965904d // indirect
 	github.com/docker/go-units v0.4.0
-	github.com/fatih/color v1.7.0 // indirect
 	github.com/filecoin-project/chain-validation v0.0.3
 	github.com/filecoin-project/filecoin-ffi v0.0.0-20191221090835-c7bbef445934
 	github.com/filecoin-project/go-address v0.0.0-20191219011437-af739c490b4f
@@ -91,6 +90,7 @@ require (
 	github.com/otiai10/copy v1.0.2
 	github.com/polydawn/refmt v0.0.0-20190809202753-05966cbd336a
 	github.com/rfyiamcool/syncmap v0.0.0-20181227021732-a2eaf358f89c
+	github.com/smallnest/rpcx v0.0.0-20200228082541-3c15529b0f91
 	github.com/smartystreets/assertions v1.0.1 // indirect
 	github.com/smartystreets/goconvey v0.0.0-20190731233626-505e41936337 // indirect
 	github.com/stretchr/testify v1.4.0
@@ -104,7 +104,7 @@ require (
 	go.uber.org/fx v1.9.0
 	go.uber.org/goleak v0.10.0 // indirect
 	go.uber.org/multierr v1.4.0
-	go.uber.org/zap v1.10.0
+	go.uber.org/zap v1.12.0
 	go4.org v0.0.0-20190313082347-94abd6928b1d // indirect
 	golang.org/x/crypto v0.0.0-20191206172530-e9b2fee46413 // indirect
 	golang.org/x/sync v0.0.0-20190423024810-112230192c58

@@ -4,15 +4,17 @@ import (
 	"context"
 	crand "crypto/rand"
 	"fmt"
+	"io"
+	mrand "math/rand"
+	"testing"
+
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/peer"
 	crypto "github.com/libp2p/go-libp2p-crypto"
 	peerstore "github.com/libp2p/go-libp2p-peerstore"
 	"github.com/multiformats/go-multiaddr"
-	"io"
-	mrand "math/rand"
-	"testing"
+	"github.com/smallnest/rpcx/log"
 )
 
 const port_base = 10000
@@ -31,18 +33,45 @@ func createnodes(nodesCount int) []multiaddr.Multiaddr {
 	}
 	return peers
 }
-func proc17(sender peer.ID, data []byte, info interface{}) error {
-	if data[0] == 0x17 {
+func proc16(sender peer.ID, data []byte, info interface{}) error {
+	chanRet := info.(chan bool)
+	if data[0] == 0x16 {
+		chanRet <- true
 		return nil
 	} else {
-		return fmt.Errorf("not 17")
+		chanRet <- false
+		return fmt.Errorf("not 16")
+	}
+}
+func ignore16(sender peer.ID, data []byte, info interface{}) error {
+
+	if data[0] == 0x16 {
+		log.Info("16 ignored")
+		return nil
+	} else {
+		log.Info("error 16")
+		return fmt.Errorf("not 16")
 	}
 }
 
 func proc18(sender peer.ID, data []byte, info interface{}) error {
+	chanRet := info.(chan bool)
 	if data[0] == 0x18 {
+		chanRet <- true
 		return nil
 	} else {
+		chanRet <- false
+		return fmt.Errorf("not 18")
+	}
+}
+
+func ignore18(sender peer.ID, data []byte, info interface{}) error {
+
+	if data[0] == 0x18 {
+		log.Info("18 ignored")
+		return nil
+	} else {
+		log.Info("error 18")
 		return fmt.Errorf("not 18")
 	}
 }
@@ -84,7 +113,7 @@ func TestConnection(t *testing.T) {
 	}
 
 	srvs := make([]*TransPushPullService, 0)
-	//每个节点连接后面的4个
+	//每个节点连接后面的2个
 
 	for i := 0; i < addrs_cnt; i++ {
 		for j := i + 1; j < i+2; j++ {
@@ -110,17 +139,30 @@ func TestConnection(t *testing.T) {
 		srvs = append(srvs, NewTransPushPullTransfer(nodes[i]))
 	}
 	//选两个相邻的点测试一下
-	for i := 0; i < addrs_cnt; i++ {
-		srvs[i].RegisterHandle("/test1/short", proc17, srvs[i])
-		srvs[i].RegisterHandle("/test2/long", proc18, srvs[i])
-	}
+	//	for i := 0; i < addrs_cnt; i++ {
+	chan16 := make(chan bool, 1)
+	chan18 := make(chan bool, 1)
+	srvs[16].RegisterHandle("/test1/short", proc16, chan16)
+	srvs[18].RegisterHandle("/test2/long", proc18, chan18)
+
+	srvs[18].RegisterHandle("/test1/short", ignore16, chan16)
+	srvs[16].RegisterHandle("/test2/long", ignore18, chan18)
+	//	}
 
 	longData := make([]byte, 256)
 	if _, err := io.ReadFull(crand.Reader, longData); err == nil {
-		srvs[0].SendToAllNeighbours("/test2/long", longData)
+		longData[0] = 0x18
+		srvs[17].SendToAllNeighbours("/test2/long", longData)
 	}
-	srvs[1].SendToAllNeighbours("/test1/short", []byte{0x17})
+	srvs[17].SendToAllNeighbours("/test1/short", []byte{0x16})
 
-	select {}
-
+	shortOk := <-chan16
+	longOk := <-chan18
+	if !shortOk {
+		t.Fatal("short error")
+	}
+	if !longOk {
+		t.Fatal("long error")
+	}
+	t.Log("test passed")
 }

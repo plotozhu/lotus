@@ -84,6 +84,7 @@ type HandleItem struct {
 	pInfo  interface{}
 }
 
+//HandleStream 对流量进行的处理
 func (hs *TransPushPullService) HandleStream(s network.Stream) {
 	log.Println("Got a new stream!")
 
@@ -98,58 +99,65 @@ func (hs *TransPushPullService) HandleStream(s network.Stream) {
 	go hs.writeDataRoutine(context.Background(), &rwinfo)
 }
 
-//HandleStream 对流量进行的处理
 func (hs *TransPushPullService) readDataRoutine(rwinfo *rwInfo) {
 
-	dec := cbor.NewDecoder(rwinfo.rw.Reader)
+	for {
+		dec := cbor.NewDecoder(rwinfo.rw.Reader)
 
-	value := MsgPushPullData{}
-	err := dec.Decode(&value)
-	if err != nil {
-		fmt.Errorf("error in read data:%v", err)
-		return
-	}
-	hashStr := string(value.Hash)
-	switch value.CommandID {
-	case CmdPullHash:
-		if hs.pendingData.Contains(hashStr) {
-			data, ok := hs.pendingData.Get(hashStr)
-			if ok {
-				data2 := data.(*DataHandle)
+		value := MsgPushPullData{}
+		err := dec.Decode(&value)
+		if err != nil {
+			fmt.Errorf("error in read data:%v", err)
+			return
+		}
+		hashStr := string(value.Hash)
+		switch value.CommandID {
+		case CmdPullHash:
+			if hs.pendingData.Contains(hashStr) {
+				data, ok := hs.pendingData.Get(hashStr)
+				if ok {
+					data2 := data.(*DataHandle)
 
+					if err == nil {
+						hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
+						log.Println("on pull hash:", value.Hash)
+					} else {
+						fmt.Errorf("This handle is not registered")
+					}
+
+				} else {
+					log.Printf("request hash does not exists %v.", hashStr)
+				}
+			}
+		case CmdPushHash:
+			if !hs.receivedHashes.Contains(hashStr) {
 				if err == nil {
-					hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
-					log.Println("on pull hash:", value.Hash)
+					hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
+					log.Println("on push hash:", value.Hash)
 				} else {
 					fmt.Errorf("This handle is not registered")
 				}
 
 			}
-		}
-	case CmdPushHash:
-		if !hs.receivedHashes.Contains(hashStr) {
-			if err == nil {
-				hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
-				log.Println("on push hash:", value.Hash)
-			} else {
-				fmt.Errorf("This handle is not registered")
-			}
+		case CmdPushData:
+			if value.Hash == nil || !hs.receivedHashes.Contains(hashStr) {
+				if value.Hash != nil {
+					hs.receivedHashes.Add(hashStr, true)
+				}
+				log.Println("on push data:", value)
+				handles, ok := hs.procHandle.Load(string(value.Handle))
+				if ok {
+					for _, handle := range handles.([]*HandleItem) {
+						go func(thisPeer peer.ID, v []byte) {
+							handle.handle(thisPeer, v, handle.pInfo)
+						}(hs.host.ID(), value.Data)
+					}
+				}
 
-		}
-	case CmdPushData:
-		if value.Hash == nil || !hs.receivedHashes.Contains(value.Hash) {
-			if value.Hash != nil {
-				hs.receivedHashes.Add(value.Hash, true)
-			}
-			log.Println("on push data:", value.Hash)
-			handles, _ := hs.procHandle.Load(string(value.Handle))
-			for _, handle := range handles.([]*HandleItem) {
-				go func(thisPeer peer.ID, v []byte) {
-					handle.handle(thisPeer, v, handle.pInfo)
-				}(hs.host.ID(), value.Data)
 			}
 		}
 	}
+
 }
 
 //写过程，接收队列的数据，然后把数据放进去
