@@ -48,7 +48,7 @@ func proc18(sender peer.ID, data []byte, info interface{}) error {
 }
 func TestConnection(t *testing.T) {
 
-	addrs_cnt := 2
+	addrs_cnt := 20
 	var nodes []host.Host
 
 	addrs := createnodes(addrs_cnt)
@@ -110,14 +110,16 @@ func TestConnection(t *testing.T) {
 		srvs = append(srvs, NewTransPushPullTransfer(nodes[i]))
 	}
 	//选两个相邻的点测试一下
-	srvs[0].RegisterHandle("/test1/short", proc17, srvs[0])
-	srvs[1].RegisterHandle("/test2/long", proc18, srvs[1])
+	for i := 0; i < addrs_cnt; i++ {
+		srvs[i].RegisterHandle("/test1/short", proc17, srvs[i])
+		srvs[i].RegisterHandle("/test2/long", proc18, srvs[i])
+	}
 
 	longData := make([]byte, 256)
 	if _, err := io.ReadFull(crand.Reader, longData); err == nil {
 		srvs[0].SendToAllNeighbours("/test2/long", longData)
 	}
-	//srvs[1].SendToAllNeighbours("/test1/short", []byte{0x17})
+	srvs[1].SendToAllNeighbours("/test1/short", []byte{0x17})
 
 	select {}
 

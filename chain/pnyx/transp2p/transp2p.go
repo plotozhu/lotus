@@ -1,22 +1,27 @@
 package transp2p
 
+/***
+
+ */
 import (
 	"context"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
+	util "github.com/filecoin-project/lotus/chain/pnyx/rtutil"
 	"github.com/filecoin-project/lotus/chain/pnyx/transpp"
-	"github.com/filecoin-project/lotus/chain/pnyx/util"
 	"github.com/fxamacker/cbor"
-	"github.com/golang/groupcache/lru"
+	"github.com/khowarizmi/go-lru"
 	"github.com/libp2p/go-libp2p-core/peer"
 	peerstore "github.com/libp2p/go-libp2p-peerstore"
 )
 
 const (
 	maxPendDataCnt   = 1024
+	maxFindCache     = 1024
 	handleRoute      = "ROUTE/CMD"
 	handleData       = "ROUTE/DATA"
 	cmdFind          = 0x01
@@ -35,9 +40,11 @@ type PendingData struct {
 	wait   chan error
 }
 type DataHandle func(data []byte)
+
+//type StreamProcessor func(sender peer.ID, data []byte, info interface{}) error
 type TransP2P struct {
 	ppSvr          *transpp.TransPushPullService
-	pendingCache   *lru.Cache //those waiting for routing
+	pendingCache   *lru.LRU //those waiting for routing
 	self           peer.ID
 	pstore         peerstore.Peerstore
 	buckets        sync.Map
@@ -46,8 +53,9 @@ type TransP2P struct {
 	currentFd      uint64
 	lock           sync.Mutex
 	waitingForResp sync.Map
-	responsedCache *lru.Cache
+	responsedCache *lru.LRU
 	handle         DataHandle
+	findRouteCahce *lru.LRU
 }
 type MsgFindRoute struct {
 	cmd      uint8
@@ -77,17 +85,18 @@ func CreateTransP2P(ctx context.Context, ppSvr *transpp.TransPushPullService, se
 
 	transInst := TransP2P{
 		ppSvr:          ppSvr,
-		pendingCache:   lru.New(maxPendDataCnt),
+		pendingCache:   lru.NewLRU(maxPendDataCnt, 128, 10*time.Minute),
 		self:           self,
 		pstore:         pstore,
 		routeTab:       routeTab,
 		dataChannel:    make(chan *PendingData, maxSendingPacket),
-		responsedCache: lru.New(maxResponsedCnt),
+		responsedCache: lru.NewLRU(maxResponsedCnt, 128, 10*time.Minute),
+		findRouteCahce: lru.NewLRU()
 		currentFd:      0,
 		handle:         handle,
 	}
-	ppSvr.RegisterHandle(handleRoute, transInst.procRouteInfo)
-	ppSvr.RegisterHandle(handleData, transInst.procDataArrival)
+	ppSvr.RegisterHandle(handleRoute, transInst.procRouteInfo, nil)
+	ppSvr.RegisterHandle(handleData, transInst.procDataArrival, nil)
 	return &transInst
 }
 func (tp *TransP2P) run(ctx context.Context) {
@@ -104,7 +113,7 @@ func (tp *TransP2P) run(ctx context.Context) {
 /**
  *  these two should be combined to one function
  */
-func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte) error {
+func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte, pInfo interface{}) error {
 	var msg MsgFindRoute
 	err := cbor.Unmarshal(data, msg)
 	if err != nil {
@@ -124,7 +133,7 @@ func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte) error {
 }
 
 // when data is arrival, response when data is to myself, or relay it, token should be consumed in the future
-func (tp *TransP2P) procDataArrival(lastHop peer.ID, data []byte) error {
+func (tp *TransP2P) procDataArrival(lastHop peer.ID, data []byte, pInfo interface{}) error {
 	var msg MsgDataTrans
 	err := cbor.Unmarshal(data, msg)
 	if err != nil {
@@ -195,7 +204,7 @@ func (tp *TransP2P) procDataSend(src peer.ID, msg *MsgDataTrans) error {
 			return nil
 		}
 		tp.responsedCache.Add(responsed, true)
-		respMsg := &MsgDataTrans{cmd: cmdDataResp, dst: msg.src, src: tp.self, orgTTL: msg.orgTTL - msg.ttl + 2, ttl: msg.orgTTL - mst.ttl + 2, fd: msg.fd}
+		respMsg := &MsgDataTrans{cmd: cmdDataResp, dst: msg.src, src: tp.self, orgTTL: msg.orgTTL - msg.ttl + 2, ttl: msg.orgTTL - msg.ttl + 2, fd: msg.fd}
 		if tp.handle != nil {
 			go tp.handle(msg.data)
 		}
