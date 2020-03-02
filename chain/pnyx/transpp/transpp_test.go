@@ -136,7 +136,7 @@ func TestConnection(t *testing.T) {
 			}
 		}
 
-		srvs = append(srvs, NewTransPushPullTransfer(nodes[i]))
+		srvs = append(srvs, NewTransPushPullTransfer(context.TODO(), nodes[i]))
 	}
 	//选两个相邻的点测试一下
 	//	for i := 0; i < addrs_cnt; i++ {

@@ -153,11 +153,9 @@ func (hs *TransPushPullService) readDataRoutine(rwinfo *rwInfo) {
 						}(hs.host.ID(), value.Data)
 					}
 				}
-
 			}
 		}
 	}
-
 }
 
 //写过程，接收队列的数据，然后把数据放进去
@@ -204,7 +202,7 @@ func (hs *TransPushPullService) sendDataToStream(s network.Stream, data interfac
 }
 
 //NewTransPushPullTransfer creating a push/pull object
-func NewTransPushPullTransfer(h host.Host /*, pstore peerstore.Peerstore*/) *TransPushPullService {
+func NewTransPushPullTransfer(ctx context.Context, h host.Host /*, pstore peerstore.Peerstore*/) *TransPushPullService {
 	cache, _ := lru.New(CacheOfData)
 	rcaches, _ := lru.New(CacheOfHashes)
 
@@ -293,12 +291,12 @@ func (hs *TransPushPullService) getRwInfo(p peer.ID) *rwInfo {
 		// This will be used during connection and stream creation by libp2p.
 
 		rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
-		new_rwinfo := rwInfo{rw, make(chan interface{}, 10)}
-		hs.writeChan[s] = &new_rwinfo
+		newRwinfo := rwInfo{rw, make(chan interface{}, 10)}
+		hs.writeChan[s] = &newRwinfo
 		// Create a thread to read and write data.
-		go hs.writeDataRoutine(context.Background(), &new_rwinfo)
-		go hs.readDataRoutine(&new_rwinfo)
-		return &new_rwinfo
+		go hs.writeDataRoutine(context.Background(), &newRwinfo)
+		go hs.readDataRoutine(&newRwinfo)
+		return &newRwinfo
 	} else {
 		return rwinfo
 	}
@@ -319,7 +317,7 @@ func (hs *TransPushPullService) SendToPeer(peerID peer.ID, handle string, data [
 		if rwinfo != nil {
 			hs.sendDataToRw(rwinfo, MsgPushPullData{CmdPushData, nil, []byte(handle), data})
 		} else {
-			fmt.Errorf("get rwinfo failed")
+			log.Fatal("get rwinfo failed")
 		}
 	}
 

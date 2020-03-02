@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/groupcache/lru"
+	lru "github.com/bluele/gcache"
 	peer "github.com/libp2p/go-libp2p-peer"
 	"golang.org/x/xerrors"
 )
@@ -17,46 +17,61 @@ const (
 )
 
 type RouteTableItem struct {
-	next     peer.ID
-	ttl      uint8
-	lastSeen time.Time
+	next peer.ID
+	ttl  uint8
 }
 type RouteInfo struct {
-	table *lru.Cache
-	mutex sync.Mutex
+	// {dest <-> RouteTableItem信息}
+	table lru.Cache
+	// live neighbour info
+	liveNeighbours lru.Cache
+	mutex          sync.Mutex
 }
 
 func CreateRouter() (*RouteInfo, error) {
-	cache := lru.New(maxRouteItems)
+	cache := lru.New(maxRouteItems).LRU().Build()
+	neighbours := lru.New(maxNeighbours).LRU().Build()
 	return &RouteInfo{
-		table: cache,
+		table:          cache,
+		liveNeighbours: neighbours,
 	}, nil
 }
 
 //GetRoutes return all route items for dest, including those older than 1 hour, it will return nil,error where there is no route items
 func (ri *RouteInfo) GetRoutes(dest peer.ID) ([]*RouteTableItem, error) {
 	ri.mutex.Lock()
-	ri.mutex.Unlock()
+	defer ri.mutex.Unlock()
 	items, ok := ri.table.Get(dest)
-	if !ok {
+	if ok != nil {
 		return nil, xerrors.Errorf("No route item found for %v", dest)
 	}
-	return items.([]*RouteTableItem), nil
+	//filter unconnected neighbours
+	retItems := make([]*RouteTableItem, 0)
+	for _, item := range items.([]*RouteTableItem) {
+		if ri.liveNeighbours.Has(item.next) {
+			retItems = append(retItems, item)
+		}
+	}
+	if len(retItems) == 0 {
+		return nil, xerrors.Errorf("No route item found for %v", dest)
+	}
+	return retItems, nil
 }
 
 // GetBestRoute returns best router item for dest, it return error when there are no route item or all items are longer than 1 hour
 func (ri *RouteInfo) GetBestRoute(dest peer.ID) (*RouteTableItem, error) {
 	ri.mutex.Lock()
-	ri.mutex.Unlock()
+	defer ri.mutex.Unlock()
 	rawItems, ok := ri.table.Get(dest)
-	if !ok {
+	if ok != nil {
 		return nil, xerrors.Errorf("No route item found for %v", dest)
 	}
 	items := rawItems.([]*RouteTableItem)
 	maxttl := uint8(255)
 	index := uint8(255)
+
 	for i, item := range items {
-		if item.ttl < maxttl && time.Since(item.lastSeen) < expireTime {
+		if item.ttl < maxttl && ri.liveNeighbours.Has(item.next) {
 			maxttl = item.ttl
 			index = uint8(i)
 		}
@@ -67,63 +82,70 @@ func (ri *RouteInfo) GetBestRoute(dest peer.ID) (*RouteTableItem, error) {
 	return items[index], nil
 }
 
+func (ri *RouteInfo) UpdateNeighbour(next peer.ID, breakdown bool) {
+	ri.mutex.Lock()
+	defer ri.mutex.Unlock()
+	if breakdown {
+		ri.liveNeighbours.Remove(next)
+	} else {
+		ri.liveNeighbours.SetWithExpire(next, true, 3*time.Minute)
+	}
+}
+
 //UpdateRoute will update route item for dest, update will occurs only when
 // 1. no more than 3 route items for dest, or
-// 2. next is exist and lastseen is older than fastExpireTime or ttl is smaller
+// 2. next is not exist  or ttl is smaller
 // 3. there are items older than 1 hour
 func (ri *RouteInfo) UpdateRoute(dest, next peer.ID, ttl uint8) {
 	ri.mutex.Lock()
-	ri.mutex.Unlock()
+	defer ri.mutex.Unlock()
+	ri.UpdateNeighbour(next, false)
 	items, ok := ri.table.Get(dest)
-	if !ok {
-		newItems := append([]*RouteTableItem{}, &RouteTableItem{next, ttl, time.Now()})
-		ri.table.Add(dest, newItems)
+	if ok != nil {
+		newItems := append([]*RouteTableItem{}, &RouteTableItem{next, ttl})
+		ri.table.SetWithExpire(dest, newItems, expireTime)
 	} else {
 		target := items.([]*RouteTableItem)
-		if len(target) < int(alpha) {
-			target := append(target, &RouteTableItem{next, ttl, time.Now()})
-			ri.table.Add(dest, target)
-		} else {
-			//大于等于3个了，找到最差的一个换
-			updated := false
-			modified := false
-			for _, item := range target[:3] {
-				if item.next == next {
-					if time.Since(item.lastSeen) > fastExpireTime || ttl <= item.ttl {
-						item.ttl = ttl
-						item.lastSeen = time.Now()
-						modified = true
-					}
-					updated = true
-					break
-				}
-			}
-			if !updated {
-				indexOldest := -1
-				oldest := int64(0)
-				//find a most oldest one and replace it
-				for index, item := range target[:3] {
-					elasped := int64(time.Since(item.lastSeen))
-					if elasped > oldest {
-						indexOldest = index
-						oldest = elasped
+		//大于等于3个了，找到相同的或是最差的一个换，最差的一个是指（按顺序）
+		//1. 已经断线的 2. 超时的   3. ttl最大的
+		sameIndex := 255
+		brokenIndex := 255
 
-					}
-				}
-				if indexOldest >= 0 {
-					item := target[indexOldest]
-					if time.Since(item.lastSeen) > expireTime {
-						item.next = next
-						item.ttl = ttl
-						item.lastSeen = time.Now()
-						modified = true
-					}
-				}
+		maxTTLIndex := 255
+		maxTTL := uint8(0)
+		toCheck := len(target)
+		if toCheck >= int(alpha) {
+			toCheck = int(alpha)
+		}
+		for index, item := range target[:toCheck] {
+			if item.next == next {
+				sameIndex = index
+				break
+			} else if !ri.liveNeighbours.Has(item.next) {
+				brokenIndex = index
+			}
+			if item.ttl > maxTTL {
+				maxTTL = item.ttl
+				maxTTLIndex = index
+			}
+		}
+		toModify := 255
+		if sameIndex < 3 {
+			toModify = sameIndex
+		} else if brokenIndex < 3 {
+			toModify = brokenIndex
+		} else if maxTTLIndex < 3 {
+			toModify = maxTTLIndex
+		}
+		if toModify < 3 {
+			item := target[toModify]
+			item.next = next
+			//only need update if ttl is changed
+			if item.ttl != ttl {
+				item.ttl = ttl
+				ri.table.SetWithExpire(dest, target, expireTime)
+			}
 
-			}
-			if modified {
-				ri.table.Add(dest, target)
-			}
 		}
 	}
 }
