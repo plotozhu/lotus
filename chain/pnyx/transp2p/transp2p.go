@@ -20,6 +20,7 @@ import (
 	"github.com/filecoin-project/lotus/chain/pnyx/transpp"
 	"github.com/fxamacker/cbor"
 
+	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/peer"
 	peerstore "github.com/libp2p/go-libp2p-peerstore"
 )
@@ -130,7 +131,7 @@ type MsgDataTrans struct {
 }
 
 //CreateTransP2P create a P2P transfer service
-func CreateTransP2P(ctx context.Context, self peer.ID, ppSvr *transpp.TransPushPullService, pstore peerstore.Peerstore, routeTab RouteIntf, handle DataHandle) (*TransP2P, error) {
+func NewTransP2P(ctx context.Context, ahost host.Host, routeTab RouteIntf, handle DataHandle) (*TransP2P, error) {
 	var err error
 	if routeTab == nil || reflect.ValueOf(routeTab).IsNil() {
 		routeTab, err = CreateRouter()
@@ -139,31 +140,31 @@ func CreateTransP2P(ctx context.Context, self peer.ID, ppSvr *transpp.TransPushP
 		}
 	}
 	transInst := TransP2P{
-		ppSvr:          ppSvr,
+		ppSvr:          transpp.NewTransPushPullTransfer(ctx, ahost),
 		pendingCache:   gcache.New(maxPendDataCnt).LRU().Build(), // 128, 10*time.Minute),
-		self:           self,
-		pstore:         pstore,
+		self:           ahost.ID(),
+		pstore:         ahost.Peerstore(),
 		routeTab:       routeTab,
 		dataChannel:    make(chan *PendingData, maxSendingPacket),
 		pingChannel:    make(chan *PingData, maxSendingPacket),
 		responsedCache: gcache.New(maxResponsedCnt).LRU().Build(), // 128, 10*time.Minute),
 		findRouteCahce: gcache.New(maxFindCache).LRU().Build(),    // 128, 10*time.Minute),
-
-		currentFd: 0,
-		handle:    handle,
-		ctx:       ctx,
+		observers:      gcache.New(100).LRU().Build(),
+		currentFd:      0,
+		handle:         handle,
+		ctx:            ctx,
 	}
 	transInst.waitingForResp = gcache.New(maxSendingPacket).LRU().EvictedFunc(transInst.onSendTimeout).Build()
 	transInst.pingpongCache = gcache.New(maxNeighbours).LRU().Build()
-	ppSvr.RegisterHandle(handlePingPong, transInst.procPingPong, nil)
-	ppSvr.RegisterHandle(handleRoute, transInst.procRouteInfo, nil)
-	ppSvr.RegisterHandle(handleData, transInst.procDataArrival, nil)
+	transInst.ppSvr.RegisterHandle(handlePingPong, transInst.procPingPong, nil)
+	transInst.ppSvr.RegisterHandle(handleRoute, transInst.procRouteInfo, nil)
+	transInst.ppSvr.RegisterHandle(handleData, transInst.procDataArrival, nil)
 	go transInst.run(ctx)
 	return &transInst, nil
 }
 
 func (tp *TransP2P) run(ctx context.Context) {
-	tp.startPingService()
+	go tp.startPingService()
 	for {
 		select {
 		case packet := <-tp.dataChannel:
@@ -266,7 +267,7 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 }
 func (tp *TransP2P) startPingService() {
 	if tp.pstore != nil && !reflect.ValueOf(tp.pstore).IsNil() {
-
+		<-time.NewTimer(20 * time.Second).C
 		for _, peerID := range tp.pstore.Peers() {
 			tp.sendPingPongTo(peerID, cmdPing)
 			tp.resetPingWorker(tp.ctx, peerID, statePinged)
@@ -604,10 +605,10 @@ func (tp *TransP2P) sendRouteDataToNearer(msg *MsgFindRoute) error {
 	myDist := util.Dist(tp.self, msg.Dst)
 
 	target := make([]*peer.ID, 0)
-	for i := 63; i > myDist; i-- {
+	for i := 0; i < myDist; i++ {
 		val, ok := distsmap[i]
 		if ok {
-			target := append(target, val...)
+			target = append(target, val...)
 
 			if len(target) >= int(alpha) {
 				break

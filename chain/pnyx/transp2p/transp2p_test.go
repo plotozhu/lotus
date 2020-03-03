@@ -3,12 +3,13 @@ package transp2p
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	mrand "math/rand"
+	"sort"
 	"testing"
 	"time"
 
-	rtutil "github.com/filecoin-project/lotus/chain/pnyx/rtutil"
-	"github.com/filecoin-project/lotus/chain/pnyx/transpp"
+	"github.com/bluele/gcache"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -17,6 +18,19 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
+/***
+ * 测试目标：
+ * 1. 路由测试
+ *    创建、删除路由
+ * 2. 收发测试
+ *    发现路由、删除路由
+ *    发送数据
+ * 		成功接收发送数据
+ *      发送失败
+ * 		路由切换
+ * 		1 删除一个中间设备，发送成功
+ *      2 删除所有的中间设备，发送
+ */
 const port_base = 10000
 
 func createnodes(nodesCount int) []multiaddr.Multiaddr {
@@ -48,17 +62,33 @@ func proc18(sender peer.ID, data []byte, info interface{}) error {
 		return fmt.Errorf("not 18")
 	}
 }
+
+type SortableHosts []host.Host
+
+func (a SortableHosts) Len() int           { return len(a) }
+func (a SortableHosts) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a SortableHosts) Less(i, j int) bool { return string(a[i].ID()) < string(a[j].ID()) }
+
+type SortablePeerStore []*peerstore.PeerInfo
+
+func (a SortablePeerStore) Len() int           { return len(a) }
+func (a SortablePeerStore) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a SortablePeerStore) Less(i, j int) bool { return string(a[i].ID) < string(a[j].ID) }
+
+func procData(data []byte) {
+	fmt.Println(data)
+}
 func TestConnection(t *testing.T) {
 
-	addrs_cnt := 100
-	var nodes []host.Host
+	addrsCnt := 20
+	var nodes SortableHosts
 
-	addrs := createnodes(addrs_cnt)
-	peerInfos := make([]*peerstore.PeerInfo, 0)
+	addrs := createnodes(addrsCnt)
+	peerInfos := make(SortablePeerStore, 0)
 
 	// start a libp2p node that listens on TCP port 2000 on the IPv4
 	// loopback interface
-	for i := 0; i < addrs_cnt; i++ {
+	for i := 0; i < addrsCnt; i++ {
 
 		r := mrand.New(mrand.NewSource(int64(i+port_base) + time.Now().UnixNano()))
 
@@ -84,41 +114,103 @@ func TestConnection(t *testing.T) {
 		nodes = append(nodes, node)
 		peerInfos = append(peerInfos, peerInfo)
 
-		fmt.Printf("%v：%v\n", i, peer.IDHexEncode(node.ID()))
 	}
-	for i := 0; i < addrs_cnt; i++ {
-		fmt.Println("")
-		for j := 0; j < addrs_cnt; j++ {
-			fmt.Printf("\t%v", rtutil.Dist(peerInfos[i].ID, peerInfos[j].ID))
-		}
+	//重新排列下，后面处理方便些
 
+	sort.Sort(peerInfos)
+	sort.Sort(nodes)
+	for i, peerInfo := range peerInfos {
+		fmt.Printf("%v：%v\n", i, peer.IDHexEncode(peerInfo.ID))
 	}
-
-	srvs := make([]*transpp.TransPushPullService, 0)
-	//每个节点连接后面的4个
-
-	for i := 0; i < addrs_cnt; i++ {
-		for j := i + 1; j < i+4; j++ {
-			index := j % addrs_cnt
-			if i == j {
+	srvs := make([]*TransP2P, 0)
+	obs := make([]*MyObserver, 0)
+	//连接，从1到addrCnt，每个都连接后面的（7/14/21/28）mod addrCnt	节点
+	for i := 0; i < addrsCnt; i++ {
+		fmt.Printf("\n %v -> [", i)
+		connected := make(map[int]bool)
+	breakout:
+		for {
+			rand.Seed(time.Now().UnixNano())
+			index := (i + rand.Intn(1000)) % addrsCnt
+			if i == index {
 				continue
 			}
-			// Extract the peer ID from the multiaddr.
-
-			// Add the destination's peer multiaddress in the peerstore.
-			// This will be used during connection and stream creation by libp2p.
-			//nodes[i].Peerstore().AddAddrs(info.ID, info.Addrs, peerstore.PermanentAddrTTL)
-			//peerID := nodes[index].ID()
-			//	nodes[i].Peerstore().AddAddrs(peerID, nodes[index].Addrs(), peerstore.PermanentAddrTTL)
-			//peerInfo := nodes[index].Peerstore().PeerInfo(nodes[index].ID())
-			//	addrs, err := peerstore.InfoToP2pAddrs(peerInfos[index])
+			if connected[index] {
+				continue
+			}
+			connected[index] = true
+			fmt.Printf("%v,", index)
 			err := nodes[i].Connect(context.Background(), peer.AddrInfo(*peerInfos[index]))
 			if err != nil {
 				panic(err)
 			}
-		}
+			if len(connected) >= 4 {
+				break breakout
+			}
 
-		srvs = append(srvs, transpp.NewTransPushPullTransfer(context.TODO(), nodes[i]))
+		}
+		fmt.Print(" ]")
+		ppSrv, _ := NewTransP2P(context.TODO(), nodes[i], nil, procData)
+		observer := NewObserver(fmt.Sprintf("OBS%v", i))
+		ppSrv.Attach(observer)
+		obs = append(obs, observer)
+		srvs = append(srvs, ppSrv)
+
+	}
+	srvs[0].FindRoute(peerInfos[19].ID, 5, 2, nil)
+
+	<-time.NewTimer(10 * time.Second).C
+	for _, observer := range obs {
+		fmt.Printf("------------- routetab of %v------------\n", observer.GetID())
+		fmt.Println(observer.Print())
+	}
+	ret := make(chan error)
+	srvs[1].SendData(peerInfos[18].ID, 5, 2, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], ret)
+	result := <-ret
+	if result == nil {
+		t.Log("send OK")
+	} else {
+		t.Fatalf("send failed %v", result)
 	}
 
+}
+
+//P2PObserver observer interface for TransP2P
+type MyObserver struct {
+	id     string
+	routes gcache.Cache
+}
+
+func NewObserver(str string) *MyObserver {
+	return &MyObserver{
+		id:     str,
+		routes: gcache.New(1000).LRU().Build(),
+	}
+}
+func (mo *MyObserver) PeerConnect(peerID peer.ID) {
+
+}
+func (mo *MyObserver) PeerDisconnect(peerID peer.ID) {
+
+}
+func (mo *MyObserver) RouteItemUpdated(dst peer.ID, routeItems []*RouteTableItem) {
+	mo.routes.Set(dst, routeItems)
+}
+
+//GetID is used to identify observer, same id means same observer
+func (mo *MyObserver) GetID() string {
+	return mo.id
+}
+
+//GetID is used to identify observer, same id means same observer
+func (mo *MyObserver) Print() string {
+	result := ""
+	for dst, items := range mo.routes.GetALL(false) {
+		result += fmt.Sprintf("dst:%v \t {", dst.(peer.ID))
+		for _, item := range items.([]*RouteTableItem) {
+			result += fmt.Sprintf("\t%v:%v,", item.next, item.ttl)
+		}
+		result += "}\n"
+	}
+	return result
 }

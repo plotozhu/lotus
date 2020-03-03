@@ -278,7 +278,8 @@ func (hs *TransPushPullService) getRwInfo(p peer.ID) *rwInfo {
 	s, err := hs.host.NewStream(context.Background(), p, PPTransProtocolID)
 	if err != nil {
 		//	hs.pmgr.RemovePeer(p)
-		fmt.Errorf("failed to open stream to peer: %w", err)
+		log.Println("failed to open stream to peer: %w", err)
+		return nil
 	}
 
 	hs.wcmutex.Lock()
@@ -305,6 +306,9 @@ func (hs *TransPushPullService) getRwInfo(p peer.ID) *rwInfo {
 
 //SendToPeer send data to peerId, data with length < 4*CommHashLen will be send directly, otherwise it will be send by push/pull machenism
 func (hs *TransPushPullService) SendToPeer(peerID peer.ID, handle string, data []byte) {
+	if strings.Compare(string(hs.host.ID()), string(peerID)) == 0 {
+		return
+	}
 	var err error
 	if len(data) > 4*CommHashLen {
 		hash := doHash(data)
@@ -317,7 +321,7 @@ func (hs *TransPushPullService) SendToPeer(peerID peer.ID, handle string, data [
 		if rwinfo != nil {
 			hs.sendDataToRw(rwinfo, MsgPushPullData{CmdPushData, nil, []byte(handle), data})
 		} else {
-			log.Fatal("get rwinfo failed")
+			log.Println("get rwinfo failed")
 		}
 	}
 
