@@ -118,7 +118,7 @@ func TestConnection(t *testing.T) {
 			}
 		}
 
-		srvs = append(srvs, transpp.NewTransPushPullTransfer(nodes[i]))
+		srvs = append(srvs, transpp.NewTransPushPullTransfer(context.TODO(), nodes[i]))
 	}
 
 }

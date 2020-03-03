@@ -26,15 +26,56 @@ type RouteInfo struct {
 	// live neighbour info
 	liveNeighbours lru.Cache
 	mutex          sync.Mutex
+	obsLock        sync.Mutex
+	observers      []RouteObserver
 }
 
+//RouteObserver observer interface for RouteItem
+type RouteObserver interface {
+	//RouteItemUpdated is called when any route item is changed, routeitem is deleted when items is nil
+	RouteItemUpdated(dst peer.ID, items []*RouteTableItem)
+}
+
+//CreateRouter create new route table
 func CreateRouter() (*RouteInfo, error) {
 	cache := lru.New(maxRouteItems).LRU().Build()
 	neighbours := lru.New(maxNeighbours).LRU().Build()
+	observers := make([]RouteObserver, 0)
 	return &RouteInfo{
 		table:          cache,
 		liveNeighbours: neighbours,
+		observers:      observers,
 	}, nil
+}
+
+//Attach add new observer to watch changes of routeitem
+func (ri *RouteInfo) Attach(observer RouteObserver) {
+	ri.obsLock.Lock()
+	defer ri.obsLock.Unlock()
+	for _, obs := range ri.observers {
+		if obs == observer {
+			return
+		}
+	}
+	ri.observers = append(ri.observers, observer)
+}
+
+//Dettach delete observe from watchlist
+func (ri *RouteInfo) Dettach(observer RouteObserver) {
+	ri.obsLock.Lock()
+	defer ri.obsLock.Unlock()
+	for index, obs := range ri.observers {
+		if obs == observer {
+			if index == len(ri.observers)-1 {
+				ri.observers = ri.observers[:index]
+			} else if index == 0 {
+				ri.observers = ri.observers[1:index]
+			} else {
+				ri.observers = append(ri.observers[0:index], ri.observers[index+1:]...)
+			}
+		}
+	}
+
 }
 
 //GetRoutes return all route items for dest, including those older than 1 hour, it will return nil,error where there is no route items
@@ -82,6 +123,8 @@ func (ri *RouteInfo) GetBestRoute(dest peer.ID) (*RouteTableItem, error) {
 	return items[index], nil
 }
 
+//UpdateNeighbour is called to reset timer of each neighbour
+// for efficiency, breakdown will not cause route item change immediately, route item will be filtered on GetRouteItem
 func (ri *RouteInfo) UpdateNeighbour(next peer.ID, breakdown bool) {
 	ri.mutex.Lock()
 	defer ri.mutex.Unlock()
@@ -101,9 +144,11 @@ func (ri *RouteInfo) UpdateRoute(dest, next peer.ID, ttl uint8) {
 	defer ri.mutex.Unlock()
 	ri.UpdateNeighbour(next, false)
 	items, ok := ri.table.Get(dest)
+	var changedItem []*RouteTableItem = nil
 	if ok != nil {
 		newItems := append([]*RouteTableItem{}, &RouteTableItem{next, ttl})
 		ri.table.SetWithExpire(dest, newItems, expireTime)
+		changedItem = newItems
 	} else {
 		target := items.([]*RouteTableItem)
 		//大于等于3个了，找到相同的或是最差的一个换，最差的一个是指（按顺序）
@@ -145,7 +190,17 @@ func (ri *RouteInfo) UpdateRoute(dest, next peer.ID, ttl uint8) {
 				item.ttl = ttl
 				ri.table.SetWithExpire(dest, target, expireTime)
 			}
-
+			changedItem = target
+		}
+	}
+	//nodify watcher if changed
+	if changedItem != nil && len(ri.observers) > 0 {
+		ri.obsLock.Lock()
+		defer ri.obsLock.Unlock()
+		for _, observer := range ri.observers {
+			go func(observer RouteObserver, changedItem []*RouteTableItem, dst peer.ID) {
+				observer.RouteItemUpdated(dst, changedItem)
+			}(observer, changedItem, dest)
 		}
 	}
 }

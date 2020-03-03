@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/bluele/gcache"
-	lru "github.com/bluele/gcache"
+
 	"github.com/smallnest/rpcx/log"
 
 	util "github.com/filecoin-project/lotus/chain/pnyx/rtutil"
@@ -30,13 +30,17 @@ type RouteIntf interface {
 	GetBestRoute(dest peer.ID) (*RouteTableItem, error)
 	UpdateRoute(dest, next peer.ID, ttl uint8)
 	UpdateNeighbour(next peer.ID, breakdown bool)
+	Attach(RouteObserver)
+	Dettach(RouteObserver)
 }
 
-//ConnectionNotifier 连接和断开的知
-type ConnectionNotifier interface {
-	GetNeighbours() []peer.ID
-	OnConnected(func(peerID peer.ID))
-	OnDisconnected(func(peerID peer.ID))
+//P2PObserver observer interface for TransP2P
+type P2PObserver interface {
+	PeerConnect(peerID peer.ID)
+	PeerDisconnect(peerID peer.ID)
+	RouteItemUpdated(dst peer.ID, routeItems []*RouteTableItem)
+	//GetID is used to identify observer, same id means same observer
+	GetID() string
 }
 
 const (
@@ -95,10 +99,10 @@ type TransP2P struct {
 	handle         DataHandle
 	findRouteCahce gcache.Cache
 	pingpongCache  gcache.Cache
-	notifier       ConnectionNotifier
 
 	ctx          context.Context
 	ppCacheMutex sync.Mutex
+	observers    gcache.Cache
 }
 
 // MsgFindRoute 是发现消息
@@ -126,7 +130,7 @@ type MsgDataTrans struct {
 }
 
 //CreateTransP2P create a P2P transfer service
-func CreateTransP2P(ctx context.Context, self peer.ID, ppSvr *transpp.TransPushPullService, pstore peerstore.Peerstore, routeTab RouteIntf, notifier ConnectionNotifier, handle DataHandle) (*TransP2P, error) {
+func CreateTransP2P(ctx context.Context, self peer.ID, ppSvr *transpp.TransPushPullService, pstore peerstore.Peerstore, routeTab RouteIntf, handle DataHandle) (*TransP2P, error) {
 	var err error
 	if routeTab == nil || reflect.ValueOf(routeTab).IsNil() {
 		routeTab, err = CreateRouter()
@@ -136,22 +140,21 @@ func CreateTransP2P(ctx context.Context, self peer.ID, ppSvr *transpp.TransPushP
 	}
 	transInst := TransP2P{
 		ppSvr:          ppSvr,
-		pendingCache:   lru.New(maxPendDataCnt).LRU().Build(), // 128, 10*time.Minute),
+		pendingCache:   gcache.New(maxPendDataCnt).LRU().Build(), // 128, 10*time.Minute),
 		self:           self,
 		pstore:         pstore,
 		routeTab:       routeTab,
 		dataChannel:    make(chan *PendingData, maxSendingPacket),
 		pingChannel:    make(chan *PingData, maxSendingPacket),
-		responsedCache: lru.New(maxResponsedCnt).LRU().Build(), // 128, 10*time.Minute),
-		findRouteCahce: lru.New(maxFindCache).LRU().Build(),    // 128, 10*time.Minute),
+		responsedCache: gcache.New(maxResponsedCnt).LRU().Build(), // 128, 10*time.Minute),
+		findRouteCahce: gcache.New(maxFindCache).LRU().Build(),    // 128, 10*time.Minute),
 
 		currentFd: 0,
 		handle:    handle,
-		notifier:  notifier,
 		ctx:       ctx,
 	}
-	transInst.waitingForResp = lru.New(maxSendingPacket).LRU().EvictedFunc(transInst.onSendTimeout).Build()
-	transInst.pingpongCache = lru.New(maxNeighbours).LRU().Build()
+	transInst.waitingForResp = gcache.New(maxSendingPacket).LRU().EvictedFunc(transInst.onSendTimeout).Build()
+	transInst.pingpongCache = gcache.New(maxNeighbours).LRU().Build()
 	ppSvr.RegisterHandle(handlePingPong, transInst.procPingPong, nil)
 	ppSvr.RegisterHandle(handleRoute, transInst.procRouteInfo, nil)
 	ppSvr.RegisterHandle(handleData, transInst.procDataArrival, nil)
@@ -168,6 +171,39 @@ func (tp *TransP2P) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+//RouteItemUpdated is called by routetab
+func (tp *TransP2P) RouteItemUpdated(dst peer.ID, items []*RouteTableItem) {
+	for _, observer := range tp.observers.GetALL(false) {
+		go func(dst peer.ID, items []*RouteTableItem, observer P2PObserver) {
+			observer.RouteItemUpdated(dst, items)
+		}(dst, items, observer.(P2PObserver))
+	}
+}
+
+//Attach add new observer to watchlist
+func (tp *TransP2P) Attach(observer P2PObserver) {
+	firstAdd := false
+	if tp.observers.Len(false) == 0 {
+		firstAdd = true
+	}
+	tp.observers.Set(observer.GetID(), observer)
+	if firstAdd {
+		tp.routeTab.Attach(tp)
+	}
+}
+
+//Dettach remove observer from watchlist
+func (tp *TransP2P) Dettach(obsIndex string) {
+	shouldRemove := false
+	if tp.observers.Len(false) == 1 && tp.observers.Has(obsIndex) {
+		shouldRemove = true
+	}
+	tp.observers.Remove(obsIndex)
+	if shouldRemove {
+		tp.routeTab.Dettach(tp)
 	}
 }
 func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state int) {
@@ -191,6 +227,11 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 		ppState.timer.Reset(sendInterval)
 		ppState.state = state
 		tp.pingpongCache.Set(peerID, ppState)
+		for _, observer := range tp.observers.GetALL(false) {
+			go func(dst peer.ID, observer P2PObserver) {
+				observer.PeerConnect(dst)
+			}(peerID, observer.(P2PObserver))
+		}
 		go func(sendInterval time.Duration, pp *PingPongState) {
 			for {
 				select {
@@ -202,6 +243,11 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 						tp.ppCacheMutex.Lock()
 						defer tp.ppCacheMutex.Unlock()
 						tp.pingpongCache.Remove(peerID)
+						for _, observer := range tp.observers.GetALL(false) {
+							go func(dst peer.ID, observer P2PObserver) {
+								observer.PeerDisconnect(dst)
+							}(peerID, observer.(P2PObserver))
+						}
 						return
 					}
 					tp.sendPingPongTo(peerID, cmdPing)
@@ -219,9 +265,9 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 
 }
 func (tp *TransP2P) startPingService() {
-	if tp.notifier != nil && !reflect.ValueOf(tp.notifier).IsNil() {
+	if tp.pstore != nil && !reflect.ValueOf(tp.pstore).IsNil() {
 
-		for _, peerID := range tp.notifier.GetNeighbours() {
+		for _, peerID := range tp.pstore.Peers() {
 			tp.sendPingPongTo(peerID, cmdPing)
 			tp.resetPingWorker(tp.ctx, peerID, statePinged)
 
@@ -382,9 +428,8 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 		pendingReq[msg.Src] = (msg.OrgTTL - msg.Ttl)
 		tp.findRouteCahce.SetWithExpire(msg.Dst, &pendingReq, 5*time.Minute)
 		return tp.sendRouteDataToNearer(msg)
-	} else {
-		return fmt.Errorf("ttl out")
 	}
+	return fmt.Errorf("ttl out")
 
 }
 func (tp *TransP2P) procFindResp(msg *MsgFindRoute) error {
@@ -489,11 +534,12 @@ func (tp *TransP2P) relayData(msg *MsgDataTrans, autoFind bool) error {
 		//store data and to find next?
 		//now simple discard message
 		if autoFind {
+
 			tp.pendingCache.SetWithExpire(msg.Dst, msg, sendDataTimeout)
+			tp.FindRoute(msg.Dst, msg.Ttl, alpha, nil)
 		}
 
 	} else {
-
 		data, err := cbor.Marshal(msg, cbor.EncOptions{})
 		if err != nil {
 			for _, nextPeer := range peers {
