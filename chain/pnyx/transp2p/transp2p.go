@@ -267,7 +267,7 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 }
 func (tp *TransP2P) startPingService() {
 	if tp.pstore != nil && !reflect.ValueOf(tp.pstore).IsNil() {
-		<-time.NewTimer(20 * time.Second).C
+		//<-time.NewTimer(20 * time.Second).C
 		for _, peerID := range tp.pstore.Peers() {
 			tp.sendPingPongTo(peerID, cmdPing)
 			tp.resetPingWorker(tp.ctx, peerID, statePinged)

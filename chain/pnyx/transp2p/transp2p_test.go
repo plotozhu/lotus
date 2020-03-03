@@ -194,6 +194,7 @@ func (mo *MyObserver) PeerDisconnect(peerID peer.ID) {
 
 }
 func (mo *MyObserver) RouteItemUpdated(dst peer.ID, routeItems []*RouteTableItem) {
+	fmt.Printf("route updated:%v", dst)
 	mo.routes.Set(dst, routeItems)
 }
 
