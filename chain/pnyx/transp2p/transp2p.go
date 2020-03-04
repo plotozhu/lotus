@@ -164,7 +164,7 @@ func NewTransP2P(ctx context.Context, ahost host.Host, routeTab RouteIntf, handl
 }
 
 func (tp *TransP2P) run(ctx context.Context) {
-	go tp.startPingService()
+	//go tp.startPingService()
 	for {
 		select {
 		case packet := <-tp.dataChannel:
@@ -339,12 +339,13 @@ func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte, pInfo interface{
 	case cmdFindResp:
 		return tp.procFindResp(msg)
 	}
+	log.Errorf("cmd not exist:%v", msg.Cmd)
 	return fmt.Errorf("cmd not exist:%v", msg.Cmd)
 }
 
 // when data is arrival, response when data is to myself, or relay it, token should be consumed in the future
 func (tp *TransP2P) procDataArrival(lastHop peer.ID, data []byte, pInfo interface{}) error {
-	var msg *MsgDataTrans
+	var msg = &MsgDataTrans{}
 	err := cbor.Unmarshal(data, msg)
 	if err != nil {
 		log.Errorf("Error unmarshal data:%v", err)
@@ -568,11 +569,13 @@ func (tp *TransP2P) relayData(msg *MsgDataTrans, autoFind bool) error {
 		}
 		fmt.Printf("}\n")
 		data, err := cbor.Marshal(msg, cbor.EncOptions{})
-		if err != nil {
+		if err == nil {
 			for _, nextPeer := range peers {
 				log.Infof("Send Data to : %v", nextPeer.next)
 				tp.ppSvr.SendToPeer(nextPeer.next, handleData, data)
 			}
+		} else {
+			log.Errorf("%v error in relaying data %v", tp.self, err)
 		}
 
 	}
