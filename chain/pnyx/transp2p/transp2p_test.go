@@ -89,7 +89,7 @@ func ProcessData(data []byte) {
 }
 func TestConnection(t *testing.T) {
 
-	addrsCnt := 20
+	addrsCnt := 40
 	var nodes SortableHosts
 
 	addrs := createnodes(addrsCnt)
@@ -153,7 +153,7 @@ func TestConnection(t *testing.T) {
 			if err != nil {
 				log.Errorf("error in connection: %v", err)
 			}
-			if len(connected) >= 5 {
+			if len(connected) >= 7 {
 				break breakout
 			}
 
@@ -167,7 +167,7 @@ func TestConnection(t *testing.T) {
 
 	}
 	fmt.Print("\n")
-	/*srvs[0].FindRoute(peerInfos[19].ID, 20, 2, nil)*/
+	go srvs[0].FindRoute(peerInfos[19].ID, 20, 3, nil)
 	//ret := make(chan error)
 
 	go func() {
@@ -182,7 +182,7 @@ func TestConnection(t *testing.T) {
 
 	retChannel := make(chan error)
 	srvs[18].SetDataHandle(ProcessData)
-	srvs[1].SendData(peerInfos[18].ID, 20, 2, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], retChannel)
+	srvs[1].SendData(peerInfos[18].ID, 20, 3, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], retChannel)
 	result := <-retChannel
 	if result == nil {
 		t.Log("send OK")
