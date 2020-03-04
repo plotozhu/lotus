@@ -16,6 +16,7 @@ import (
 	crypto "github.com/libp2p/go-libp2p-crypto"
 	peerstore "github.com/libp2p/go-libp2p-peerstore"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/smallnest/rpcx/log"
 )
 
 /***
@@ -78,6 +79,14 @@ func (a SortablePeerStore) Less(i, j int) bool { return string(a[i].ID) < string
 func procData(data []byte) {
 	fmt.Println(data)
 }
+
+func ProcessData(data []byte) {
+	if data[0] == 0x01 && len(data) == 5 {
+		log.Info("Transfer data ok")
+	} else {
+		log.Error("Transfer data failed")
+	}
+}
 func TestConnection(t *testing.T) {
 
 	addrsCnt := 20
@@ -120,7 +129,7 @@ func TestConnection(t *testing.T) {
 	sort.Sort(peerInfos)
 	sort.Sort(nodes)
 	for i, peerInfo := range peerInfos {
-		fmt.Printf("%v：%v\n", i, peer.IDHexEncode(peerInfo.ID))
+		fmt.Printf("%v：%v\n", i, peerInfo.ID.Pretty())
 	}
 	srvs := make([]*TransP2P, 0)
 	obs := make([]*MyObserver, 0)
@@ -142,9 +151,9 @@ func TestConnection(t *testing.T) {
 			fmt.Printf("%v,", index)
 			err := nodes[i].Connect(context.Background(), peer.AddrInfo(*peerInfos[index]))
 			if err != nil {
-				panic(err)
+				log.Errorf("error in connection: %v", err)
 			}
-			if len(connected) >= 4 {
+			if len(connected) >= 5 {
 				break breakout
 			}
 
@@ -157,16 +166,24 @@ func TestConnection(t *testing.T) {
 		srvs = append(srvs, ppSrv)
 
 	}
-	srvs[0].FindRoute(peerInfos[19].ID, 5, 2, nil)
+	fmt.Print("\n")
+	/*srvs[0].FindRoute(peerInfos[19].ID, 20, 2, nil)*/
+	//ret := make(chan error)
 
-	<-time.NewTimer(10 * time.Second).C
-	for _, observer := range obs {
-		fmt.Printf("------------- routetab of %v------------\n", observer.GetID())
-		fmt.Println(observer.Print())
-	}
-	ret := make(chan error)
-	srvs[1].SendData(peerInfos[18].ID, 5, 2, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], ret)
-	result := <-ret
+	go func() {
+		<-time.NewTimer(5 * time.Second).C
+		fmt.Print("\n")
+		for i, observer := range obs {
+			fmt.Printf("------------- routetab of %v:%v------------\n", observer.GetID(), peerInfos[i].ID.Pretty())
+			fmt.Println(observer.Print())
+		}
+		//	ret <- nil
+	}()
+
+	retChannel := make(chan error)
+	srvs[18].SetDataHandle(ProcessData)
+	srvs[1].SendData(peerInfos[18].ID, 20, 2, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], retChannel)
+	result := <-retChannel
 	if result == nil {
 		t.Log("send OK")
 	} else {
@@ -194,7 +211,7 @@ func (mo *MyObserver) PeerDisconnect(peerID peer.ID) {
 
 }
 func (mo *MyObserver) RouteItemUpdated(dst peer.ID, routeItems []*RouteTableItem) {
-	fmt.Printf("route updated:%v", dst)
+	//	fmt.Printf("route updated:%v", dst)
 	mo.routes.Set(dst, routeItems)
 }
 

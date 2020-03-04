@@ -36,6 +36,8 @@ const (
 const (
 	//CommHashLen length of hash
 	CommHashLen = 32
+	//MaxDirectSend without push pull
+	MaxDirectData = 8 * CommHashLen
 	//CacheOfData  max {hash,data} pairs to store
 	CacheOfData = 1024
 	//CacheOfHashes received blocks's hash
@@ -62,8 +64,9 @@ func doHash(b []byte) []byte {
 }
 
 type rwInfo struct {
-	rw *bufio.ReadWriter
-	q  chan interface{}
+	rw       *bufio.ReadWriter
+	q        chan interface{}
+	lastHost peer.ID
 }
 
 //TransPushPullService basic interface
@@ -86,12 +89,12 @@ type HandleItem struct {
 
 //HandleStream 对流量进行的处理
 func (hs *TransPushPullService) HandleStream(s network.Stream) {
-	log.Println("Got a new stream!")
+	//log.Println("Got a new stream!")
 
 	// Create a buffer stream for non blocking read and write.
 	rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
 
-	rwinfo := rwInfo{rw, make(chan interface{}, 10)}
+	rwinfo := rwInfo{rw, make(chan interface{}, 10), s.Conn().RemotePeer()}
 	hs.wcmutex.Lock()
 	hs.writeChan[s] = &rwinfo
 	hs.wcmutex.Unlock()
@@ -120,7 +123,7 @@ func (hs *TransPushPullService) readDataRoutine(rwinfo *rwInfo) {
 
 					if err == nil {
 						hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPushData, value.Hash, data2.Handle, data2.Data})
-						log.Println("on pull hash:", value.Hash)
+						//			log.Println("on pull hash:", value.Hash)
 					} else {
 						fmt.Errorf("This handle is not registered")
 					}
@@ -133,7 +136,7 @@ func (hs *TransPushPullService) readDataRoutine(rwinfo *rwInfo) {
 			if !hs.receivedHashes.Contains(hashStr) {
 				if err == nil {
 					hs.sendDataToRw(rwinfo, &MsgPushPullData{CmdPullHash, value.Hash, nil, nil})
-					log.Println("on push hash:", value.Hash)
+					//		log.Println("on push hash:", value.Hash)
 				} else {
 					fmt.Errorf("This handle is not registered")
 				}
@@ -144,14 +147,16 @@ func (hs *TransPushPullService) readDataRoutine(rwinfo *rwInfo) {
 				if value.Hash != nil {
 					hs.receivedHashes.Add(hashStr, true)
 				}
-				log.Println("on push data:", value)
+				log.Printf("%v received push data:%v with cmdID: %v\n", hs.host.ID(), string(value.Handle), value.CommandID)
 				handles, ok := hs.procHandle.Load(string(value.Handle))
 				if ok {
 					for _, handle := range handles.([]*HandleItem) {
-						go func(thisPeer peer.ID, v []byte) {
+						go func(thisPeer peer.ID, v []byte, handle *HandleItem) {
 							handle.handle(thisPeer, v, handle.pInfo)
-						}(hs.host.ID(), value.Data)
+						}(rwinfo.lastHost, value.Data, handle)
 					}
+				} else {
+					log.Printf("%v no handle for %v\n", hs.host.ID(), string(value.Handle))
 				}
 			}
 		}
@@ -169,7 +174,7 @@ func (hs *TransPushPullService) writeDataRoutine(ctx context.Context, rwinfo *rw
 				if err != nil {
 					fmt.Println(fmt.Sprintf("error in encoding data:%v", err))
 				} else {
-					log.Println(">>Write data:", data)
+					//	log.Println(">>Write data:", data)
 					rw.rw.Write(enc)
 					rw.rw.Flush()
 				}
@@ -292,8 +297,10 @@ func (hs *TransPushPullService) getRwInfo(p peer.ID) *rwInfo {
 		// This will be used during connection and stream creation by libp2p.
 
 		rw := bufio.NewReadWriter(bufio.NewReader(s), bufio.NewWriter(s))
-		newRwinfo := rwInfo{rw, make(chan interface{}, 10)}
+		newRwinfo := rwInfo{rw, make(chan interface{}, 10), s.Conn().RemotePeer()}
+		hs.wcmutex.Lock()
 		hs.writeChan[s] = &newRwinfo
+		hs.wcmutex.Unlock()
 		// Create a thread to read and write data.
 		go hs.writeDataRoutine(context.Background(), &newRwinfo)
 		go hs.readDataRoutine(&newRwinfo)
@@ -307,10 +314,12 @@ func (hs *TransPushPullService) getRwInfo(p peer.ID) *rwInfo {
 //SendToPeer send data to peerId, data with length < 4*CommHashLen will be send directly, otherwise it will be send by push/pull machenism
 func (hs *TransPushPullService) SendToPeer(peerID peer.ID, handle string, data []byte) {
 	if strings.Compare(string(hs.host.ID()), string(peerID)) == 0 {
+		fmt.Printf("%v try send to self\n", hs.host.ID())
 		return
 	}
+	fmt.Printf("%v try send data to %v with handle:%v\n", hs.host.ID(), peerID, handle)
 	var err error
-	if len(data) > 4*CommHashLen {
+	if len(data) > MaxDirectData {
 		hash := doHash(data)
 		hashData := make([]byte, CommHashLen)
 		copy(hashData[:], hash[:CommHashLen])

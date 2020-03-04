@@ -74,11 +74,11 @@ type PingPongState struct {
 	state int
 }
 type PendingData struct {
-	Dst    peer.ID
-	Alpha  uint8
-	OrgTTL uint8
-	Data   []byte
-	Wait   chan error
+	Dst   peer.ID
+	Alpha uint8
+	OTtl  uint8
+	Data  []byte
+	Wait  chan error
 }
 type DataHandle func(data []byte)
 type FindRouteReq map[peer.ID]uint8
@@ -112,22 +112,22 @@ type MsgFindRoute struct {
 	Dst      peer.ID
 	Src      peer.ID
 	Alpha    uint8
-	OrgTTL   uint8
+	OTtl     uint8
 	Ttl      uint8
 	Outbound []byte
-	Receipts []byte //used for token consume,current is nil
+	Rpts     []byte //used for token consume,current is nil
 }
 
 //MsgDataTrans msg for data transfer
 type MsgDataTrans struct {
-	Cmd      uint8
-	Dst      peer.ID
-	Src      peer.ID
-	OrgTTL   uint8
-	Ttl      uint8
-	Fd       uint64
-	Data     []byte
-	Receipts []byte //used for token consume,current is nil
+	Cmd  uint8
+	Dst  peer.ID
+	Src  peer.ID
+	OTtl uint8
+	Ttl  uint8
+	Fd   uint64
+	Data []byte
+	Rpts []byte //used for token consume,current is nil
 }
 
 //CreateTransP2P create a P2P transfer service
@@ -175,6 +175,11 @@ func (tp *TransP2P) run(ctx context.Context) {
 	}
 }
 
+//SetDataHandle for this service
+func (tp *TransP2P) SetDataHandle(handle DataHandle) {
+	tp.handle = handle
+}
+
 //RouteItemUpdated is called by routetab
 func (tp *TransP2P) RouteItemUpdated(dst peer.ID, items []*RouteTableItem) {
 	for _, observer := range tp.observers.GetALL(false) {
@@ -212,7 +217,7 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 	defer tp.ppCacheMutex.Unlock()
 	pp, err := tp.pingpongCache.Get(peerID)
 	var ppState *PingPongState
-	var aTimer *time.Timer
+
 	rand.Seed(time.Now().UnixNano())
 	sendInterval := pingInterval + time.Duration(rand.Intn(5000))*time.Millisecond
 
@@ -232,11 +237,12 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 			go func(dst peer.ID, observer P2PObserver) {
 				observer.PeerConnect(dst)
 			}(peerID, observer.(P2PObserver))
+
 		}
 		go func(sendInterval time.Duration, pp *PingPongState) {
 			for {
 				select {
-				case <-aTimer.C:
+				case <-pp.timer.C:
 					if ppState.state == statePinged {
 						//ping but no pong response,remove it
 						tp.routeTab.UpdateNeighbour(peerID, true)
@@ -267,7 +273,7 @@ func (tp *TransP2P) resetPingWorker(ctx context.Context, peerID peer.ID, state i
 }
 func (tp *TransP2P) startPingService() {
 	if tp.pstore != nil && !reflect.ValueOf(tp.pstore).IsNil() {
-		//<-time.NewTimer(20 * time.Second).C
+		<-time.NewTimer(5 * time.Second).C
 		for _, peerID := range tp.pstore.Peers() {
 			tp.sendPingPongTo(peerID, cmdPing)
 			tp.resetPingWorker(tp.ctx, peerID, statePinged)
@@ -314,40 +320,45 @@ func (tp *TransP2P) procPingPong(lastHop peer.ID, data []byte, pInfo interface{}
  *  these two should be combined to one function
  */
 func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte, pInfo interface{}) error {
-	var msg MsgFindRoute
+	//	log.Infof("procRouteInfo my:%v, lastHop:%v\n", tp.self.Pretty(), lastHop.Pretty())
+	var msg = &MsgFindRoute{}
 	err := cbor.Unmarshal(data, msg)
 	if err != nil {
+		log.Errorf("proc Route Info error :%v, %v", err, data)
 		return err
 	}
 
 	//update route table and process pending data if exists
-	tp.routeTab.UpdateRoute(msg.Src, lastHop, msg.OrgTTL-msg.Ttl)
-	go tp.reponsePendingFindReq(msg.Src, lastHop, &msg)
+	//log.Infof("updateRoute,this:%v,dst:%v,next:%v,ttl:%v", tp.self, msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
+	tp.routeTab.UpdateRoute(msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
+	go tp.reponsePendingFindReq(msg.Src, lastHop, msg)
 	go tp.procPending(msg.Src)
 	switch msg.Cmd {
 	case cmdFind:
-		return tp.procFindReq(lastHop, &msg)
+		return tp.procFindReq(lastHop, msg)
 	case cmdFindResp:
-		return tp.procFindResp(&msg)
+		return tp.procFindResp(msg)
 	}
 	return fmt.Errorf("cmd not exist:%v", msg.Cmd)
 }
 
 // when data is arrival, response when data is to myself, or relay it, token should be consumed in the future
 func (tp *TransP2P) procDataArrival(lastHop peer.ID, data []byte, pInfo interface{}) error {
-	var msg MsgDataTrans
+	var msg *MsgDataTrans
 	err := cbor.Unmarshal(data, msg)
 	if err != nil {
+		log.Errorf("Error unmarshal data:%v", err)
 		return err
 	}
+	log.Infof("dataArrived,this:%v,dst:%v,next:%v,ttl:%v", tp.self, msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
 	//update route table and process pending data if exists
-	tp.routeTab.UpdateRoute(msg.Src, lastHop, msg.OrgTTL-msg.Ttl)
+	tp.routeTab.UpdateRoute(msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
 	go tp.procPending(msg.Src)
 	switch msg.Cmd {
 	case cmdSendData:
-		return tp.procDataSend(lastHop, &msg)
+		return tp.procDataSend(lastHop, msg)
 	case cmdDataResp:
-		return tp.procDataResp(&msg)
+		return tp.procDataResp(msg)
 	}
 	return fmt.Errorf("cmd not exist:%v", msg.Cmd)
 
@@ -359,14 +370,14 @@ func (tp *TransP2P) reponsePendingFindReq(dst peer.ID, nextHop peer.ID, rawMsg *
 	if err == nil {
 		for src, _ := range *pendingItem.(*FindRouteReq) {
 			msg := MsgFindRoute{
-				Cmd:    cmdFindResp,
-				Dst:    src,
-				Src:    dst,
-				Alpha:  alpha,
-				OrgTTL: rawMsg.OrgTTL,
-				Ttl:    rawMsg.Ttl,
+				Cmd:   cmdFindResp,
+				Dst:   src,
+				Src:   dst,
+				Alpha: alpha,
+				OTtl:  rawMsg.OTtl,
+				Ttl:   rawMsg.Ttl - 1,
 			}
-			data, err := cbor.Marshal(msg, cbor.EncOptions{})
+			data, err := cbor.Marshal(&msg, cbor.EncOptions{})
 			if err == nil {
 				tp.ppSvr.SendToPeer(src, handleRoute, data)
 			}
@@ -380,32 +391,32 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 		//send response
 
 		msg := MsgFindRoute{
-			Cmd:    cmdFindResp,
-			Dst:    msg.Src,
-			Src:    tp.self,
-			Alpha:  alpha,
-			OrgTTL: msg.OrgTTL - msg.Ttl + 2,
-			Ttl:    msg.OrgTTL - msg.Ttl + 2,
+			Cmd:   cmdFindResp,
+			Dst:   msg.Src,
+			Src:   tp.self,
+			Alpha: alpha,
+			OTtl:  msg.OTtl - msg.Ttl + 2,
+			Ttl:   msg.OTtl - msg.Ttl + 2,
 		}
-		data, err := cbor.Marshal(msg, cbor.EncOptions{})
+		data, err := cbor.Marshal(&msg, cbor.EncOptions{})
 		if err != nil {
 			return err
 		}
 		tp.ppSvr.SendToPeer(src, handleRoute, data)
 		return nil
 	}
-	//try to find a valid one from routeTab
+	//try to find a valid one from routeTab,
 	item, err := tp.routeTab.GetBestRoute(msg.Dst)
 	if err == nil {
 		msg := MsgFindRoute{
-			Cmd:    cmdFindResp,
-			Dst:    msg.Src,
-			Src:    msg.Dst,
-			Alpha:  alpha,
-			OrgTTL: msg.OrgTTL - msg.Ttl + 2,
-			Ttl:    msg.OrgTTL - msg.Ttl + item.ttl,
+			Cmd:   cmdFindResp,
+			Dst:   msg.Src,
+			Src:   msg.Dst,
+			Alpha: alpha,
+			OTtl:  msg.OTtl - msg.Ttl + 2,
+			Ttl:   msg.OTtl - msg.Ttl + 2 - item.ttl,
 		}
-		data, err := cbor.Marshal(msg, cbor.EncOptions{})
+		data, err := cbor.Marshal(&msg, cbor.EncOptions{})
 		if err == nil {
 			tp.ppSvr.SendToPeer(src, handleRoute, data)
 			return nil
@@ -416,7 +427,7 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 	request, err := tp.findRouteCahce.Get(msg.Dst)
 	if err == nil {
 		result := request.(*FindRouteReq)
-		(*result)[msg.Src] = (msg.OrgTTL - msg.Ttl)
+		(*result)[msg.Src] = (msg.OTtl - msg.Ttl - 1)
 		tp.findRouteCahce.SetWithExpire(msg.Dst, result, 5*time.Minute)
 		return nil
 
@@ -426,7 +437,7 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 	if msg.Ttl > 0 {
 		msg.Ttl--
 		pendingReq := make(FindRouteReq)
-		pendingReq[msg.Src] = (msg.OrgTTL - msg.Ttl)
+		pendingReq[msg.Src] = (msg.OTtl - msg.Ttl)
 		tp.findRouteCahce.SetWithExpire(msg.Dst, &pendingReq, 5*time.Minute)
 		return tp.sendRouteDataToNearer(msg)
 	}
@@ -434,7 +445,7 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 
 }
 func (tp *TransP2P) procFindResp(msg *MsgFindRoute) error {
-	//route is updated before calling this
+	//neighbour route is updated before calling this
 	// I am the destination
 	if strings.Compare(string(msg.Dst), string(tp.self)) == 0 {
 
@@ -449,9 +460,11 @@ func (tp *TransP2P) procFindResp(msg *MsgFindRoute) error {
 	return tp.sendRouteDataToNearer(msg)
 }
 
-func (tp *TransP2P) procDataSend(src peer.ID, msg *MsgDataTrans) error {
+func (tp *TransP2P) procDataSend(lastHop peer.ID, msg *MsgDataTrans) error {
 	// if this data is sent to me
+	log.Infof("%v received data to %v", tp.self, msg.Dst)
 	if strings.Compare(string(msg.Dst), string(tp.self)) == 0 {
+		log.Info("%v Receive Data from %v with FD:%v", tp.self, msg.Src, msg.Fd)
 		//data may send to me multitimes from different route, Only one response will be sent
 		responsed := fmt.Sprintf("%v:%v", msg.Src, msg.Fd)
 		_, ok := tp.responsedCache.Get(responsed)
@@ -459,7 +472,7 @@ func (tp *TransP2P) procDataSend(src peer.ID, msg *MsgDataTrans) error {
 			return nil
 		}
 		tp.responsedCache.SetWithExpire(responsed, true, expireTime)
-		respMsg := &MsgDataTrans{Cmd: cmdDataResp, Dst: msg.Src, Src: tp.self, OrgTTL: msg.OrgTTL - msg.Ttl + 2, Ttl: msg.OrgTTL - msg.Ttl + 2, Fd: msg.Fd}
+		respMsg := &MsgDataTrans{Cmd: cmdDataResp, Dst: msg.Src, Src: tp.self, OTtl: msg.OTtl - msg.Ttl + 2, Ttl: msg.OTtl - msg.Ttl + 2, Fd: msg.Fd}
 		if tp.handle != nil {
 			go tp.handle(msg.Data)
 		}
@@ -469,7 +482,7 @@ func (tp *TransP2P) procDataSend(src peer.ID, msg *MsgDataTrans) error {
 			return err
 		}
 
-		tp.ppSvr.SendToPeer(src, handleData, data)
+		tp.ppSvr.SendToPeer(lastHop, handleData, data)
 		return nil
 	}
 	//should reply to next
@@ -480,6 +493,7 @@ func (tp *TransP2P) procDataSend(src peer.ID, msg *MsgDataTrans) error {
 		return fmt.Errorf("ttl out")
 	}
 	//TODO calculation data and token
+	log.Infof("%v received data and relaying to %v", tp.self, msg.Dst)
 	return tp.relayData(msg, true)
 }
 func (tp *TransP2P) procDataResp(msg *MsgDataTrans) error {
@@ -506,7 +520,7 @@ func (tp *TransP2P) procDataResp(msg *MsgDataTrans) error {
 		return fmt.Errorf("ttl out")
 	}
 
-	//TODO calculation data and token,  and resign a receipts to msg.receipts
+	//TODO calculation data and token,  and resign a Rpts to msg.Rpts
 	return tp.relayData(msg, true)
 }
 
@@ -514,13 +528,16 @@ func (tp *TransP2P) procDataResp(msg *MsgDataTrans) error {
 func (tp *TransP2P) procPending(dst peer.ID) {
 	tp.lock.Lock()
 	defer tp.lock.Unlock()
+	//	log.Infof("%v try to retract  relaying data:%v", tp.self, dst)
 	pendings, ok := tp.pendingCache.Get(dst)
 	if ok == nil {
-		tp.pendingCache.Remove(dst)
+
+		//	log.Infof("Data extracted")
 		result := pendings.([]*MsgDataTrans)
 		for _, msg := range result {
 			tp.relayData(msg, false)
 		}
+		tp.pendingCache.Remove(dst)
 
 	}
 }
@@ -531,20 +548,30 @@ func (tp *TransP2P) procPending(dst peer.ID) {
  */
 func (tp *TransP2P) relayData(msg *MsgDataTrans, autoFind bool) error {
 	peers, err := tp.routeTab.GetRoutes(msg.Dst)
+	log.Infof("%v relaying Data from %v  to %v with FD:%v", tp.self, msg.Src, msg.Dst, msg.Fd)
 	if len(peers) == 0 || err != nil {
 		//store data and to find next?
 		//now simple discard message
 		if autoFind {
 
-			tp.pendingCache.SetWithExpire(msg.Dst, msg, sendDataTimeout)
+			tp.pendingCache.SetWithExpire(msg.Dst, []*MsgDataTrans{msg}, sendDataTimeout)
 			tp.FindRoute(msg.Dst, msg.Ttl, alpha, nil)
+			log.Infof("%v pending  relaying data:%v", tp.self, msg.Dst)
+		} else {
+			log.Infof("%v discard  relaying data:%v", tp.self, msg.Dst)
 		}
 
 	} else {
+		fmt.Printf("route table is:{")
+		for _, info := range peers {
+			fmt.Printf("%v:%v,", info.next.Pretty(), info.ttl)
+		}
+		fmt.Printf("}\n")
 		data, err := cbor.Marshal(msg, cbor.EncOptions{})
 		if err != nil {
 			for _, nextPeer := range peers {
-				tp.ppSvr.SendToPeer(nextPeer.next, handleRoute, data)
+				log.Infof("Send Data to : %v", nextPeer.next)
+				tp.ppSvr.SendToPeer(nextPeer.next, handleData, data)
 			}
 		}
 
@@ -568,7 +595,7 @@ type DistInfo struct {
 	peer *peer.ID
 }
 
-//FindRoute Send to find a route command, ttl is the max-hop for find data and alpha is fan-out, outbound is optional and should be less than 64 bytes
+//FindRoute Send to find a route command, ttl is the max-hop for find data and alpha is fan-out, Oob is optional and should be less than 64 bytes
 // in the future, token should be provided
 func (tp *TransP2P) FindRoute(targetPeer peer.ID, ttl uint8, alpha uint8, outbound []byte) error {
 
@@ -581,7 +608,7 @@ func (tp *TransP2P) FindRoute(targetPeer peer.ID, ttl uint8, alpha uint8, outbou
 		Dst:      targetPeer,
 		Src:      tp.self,
 		Alpha:    alpha,
-		OrgTTL:   ttl,
+		OTtl:     ttl,
 		Ttl:      ttl,
 		Outbound: outbound,
 	}
@@ -594,13 +621,22 @@ func (tp *TransP2P) sendRouteDataToNearer(msg *MsgFindRoute) error {
 	//this is with very low effiecny and only used for evaluation ,a tree should be  used to find nodes as fast as possible
 	distsmap := make(map[int][]*peer.ID)
 	for _, peerID := range tp.pstore.Peers() {
-		dist := util.Dist(peerID, msg.Dst)
-		val, ok := distsmap[dist]
-		if ok {
-			distsmap[dist] = append(val, &peerID)
-		} else {
-			distsmap[dist] = append([]*peer.ID{}, &peerID)
+
+		if strings.Compare(string(peerID), string(tp.self)) != 0 {
+			dist := util.Dist(peerID, msg.Dst)
+
+			val, ok := distsmap[dist]
+			bakID, err := peer.IDHexDecode(peer.IDHexEncode(peerID))
+			if err != nil {
+				log.Errorf("\n Failed to get id:%v", err)
+			}
+			if ok {
+				distsmap[dist] = append(val, &bakID)
+			} else {
+				distsmap[dist] = append([]*peer.ID{}, &bakID)
+			}
 		}
+
 	}
 	myDist := util.Dist(tp.self, msg.Dst)
 
@@ -625,9 +661,11 @@ func (tp *TransP2P) sendRouteDataToNearer(msg *MsgFindRoute) error {
 		return err
 	}
 	if len(target) == 0 {
+		//log.Errorf("\nNO more nearer neighbour found for %v,myID: %v, myDist:%v maps:%v\n", msg.Dst, tp.self, myDist, distsmap)
 		return nil
 	}
 	tp.ppSvr.SendToPeers(target, handleRoute, data)
+	//log.Infof("\nFindRoute: this:%v,dst:%v\t,next:%v,totalNeighbour:%v\n", tp.self, msg.Dst, target, len(tp.pstore.Peers()))
 	return nil
 }
 
@@ -639,7 +677,7 @@ func (tp *TransP2P) SendData(targetPeer peer.ID, ttl uint8, alpha uint8, data []
 		return nil
 	}
 
-	pending := PendingData{Dst: targetPeer, Alpha: alpha, OrgTTL: ttl, Data: data, Wait: ret}
+	pending := PendingData{Dst: targetPeer, Alpha: alpha, OTtl: ttl, Data: data, Wait: ret}
 	go func() {
 		tp.dataChannel <- &pending
 	}()
@@ -649,14 +687,14 @@ func (tp *TransP2P) SendData(targetPeer peer.ID, ttl uint8, alpha uint8, data []
 func (tp *TransP2P) createAndRelay(pending *PendingData) error {
 	tp.currentFd++
 	msg := &MsgDataTrans{
-		Cmd:    cmdSendData,
-		Dst:    pending.Dst,
-		Src:    tp.self,
-		OrgTTL: pending.OrgTTL,
-		Ttl:    pending.OrgTTL,
-		Fd:     tp.currentFd,
-		Data:   pending.Data,
-		//receipts []byte //used for token consume,current is nil
+		Cmd:  cmdSendData,
+		Dst:  pending.Dst,
+		Src:  tp.self,
+		OTtl: pending.OTtl,
+		Ttl:  pending.OTtl,
+		Fd:   tp.currentFd,
+		Data: pending.Data,
+		//Rpts []byte //used for token consume,current is nil
 	}
 	if pending.Wait != nil {
 		tp.waitingForResp.SetWithExpire(msg.Fd, pending.Wait, sendDataTimeout)

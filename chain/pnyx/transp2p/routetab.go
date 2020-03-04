@@ -128,6 +128,14 @@ func (ri *RouteInfo) GetBestRoute(dest peer.ID) (*RouteTableItem, error) {
 func (ri *RouteInfo) UpdateNeighbour(next peer.ID, breakdown bool) {
 	ri.mutex.Lock()
 	defer ri.mutex.Unlock()
+	ri.updateNeighbour(next, breakdown)
+
+}
+
+//UpdateNeighbour is called to reset timer of each neighbour
+// for efficiency, breakdown will not cause route item change immediately, route item will be filtered on GetRouteItem
+func (ri *RouteInfo) updateNeighbour(next peer.ID, breakdown bool) {
+
 	if breakdown {
 		ri.liveNeighbours.Remove(next)
 	} else {
@@ -140,9 +148,10 @@ func (ri *RouteInfo) UpdateNeighbour(next peer.ID, breakdown bool) {
 // 2. next is not exist  or ttl is smaller
 // 3. there are items older than 1 hour
 func (ri *RouteInfo) UpdateRoute(dest, next peer.ID, ttl uint8) {
+
 	ri.mutex.Lock()
 	defer ri.mutex.Unlock()
-	ri.UpdateNeighbour(next, false)
+	ri.updateNeighbour(next, false)
 	items, ok := ri.table.Get(dest)
 	var changedItem []*RouteTableItem = nil
 	if ok != nil {
@@ -153,44 +162,63 @@ func (ri *RouteInfo) UpdateRoute(dest, next peer.ID, ttl uint8) {
 		target := items.([]*RouteTableItem)
 		//大于等于3个了，找到相同的或是最差的一个换，最差的一个是指（按顺序）
 		//1. 已经断线的 2. 超时的   3. ttl最大的
-		sameIndex := 255
-		brokenIndex := 255
+		sameIndex := uint8(255)
+		brokenIndex := uint8(255)
 
-		maxTTLIndex := 255
+		maxTTLIndex := uint8(255)
 		maxTTL := uint8(0)
 		toCheck := len(target)
 		if toCheck >= int(alpha) {
 			toCheck = int(alpha)
 		}
+		//find same one to replace
 		for index, item := range target[:toCheck] {
 			if item.next == next {
-				sameIndex = index
+				sameIndex = uint8(index)
 				break
 			} else if !ri.liveNeighbours.Has(item.next) {
-				brokenIndex = index
+				brokenIndex = uint8(index)
 			}
 			if item.ttl > maxTTL {
 				maxTTL = item.ttl
-				maxTTLIndex = index
+				maxTTLIndex = uint8(index)
 			}
 		}
-		toModify := 255
-		if sameIndex < 3 {
-			toModify = sameIndex
-		} else if brokenIndex < 3 {
-			toModify = brokenIndex
-		} else if maxTTLIndex < 3 {
-			toModify = maxTTLIndex
+		toModify := false
+		/*fmt.Printf("\nChange route %v, from {\t", dest)
+		for _, info := range target {
+			fmt.Printf("%v:%v,", info.next.Pretty(), info.ttl)
 		}
-		if toModify < 3 {
-			item := target[toModify]
-			item.next = next
-			//only need update if ttl is changed
-			if item.ttl != ttl {
-				item.ttl = ttl
-				ri.table.SetWithExpire(dest, target, expireTime)
+		fmt.Printf("}")*/
+		if sameIndex < alpha {
+			if target[sameIndex].ttl > ttl {
+				target[sameIndex].ttl = ttl
+				toModify = true
 			}
+		} else if brokenIndex < alpha {
+			target[brokenIndex].ttl = ttl
+			target[brokenIndex].next = next
+			toModify = true
+		} else if len(target) < int(alpha) {
+			target = append(target, &RouteTableItem{next: next, ttl: ttl})
+			toModify = true
+		} else if maxTTLIndex < alpha {
+			target[maxTTLIndex].ttl = ttl
+			target[maxTTLIndex].next = next
+			toModify = true
+		}
+		if toModify {
+			ri.table.SetWithExpire(dest, target, expireTime)
 			changedItem = target
+
+			/*	fmt.Printf("after:{")
+				for _, info := range target {
+					fmt.Printf("%v:%v,", info.next.Pretty(), info.ttl)
+				}
+				fmt.Printf("}\n")
+			*/
+		} else {
+			//fmt.Print("remain unchanged\n")
 		}
 	}
 	//nodify watcher if changed
