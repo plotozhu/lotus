@@ -14,6 +14,7 @@ const (
 	maxRouteItems  int   = 1024 * 128
 	expireTime           = time.Hour
 	fastExpireTime       = 10 * time.Minute
+	HashLen              = 32
 )
 
 type RouteTableItem struct {
@@ -28,6 +29,9 @@ type RouteInfo struct {
 	mutex          sync.Mutex
 	obsLock        sync.Mutex
 	observers      []RouteObserver
+	buckets        map[int]peer.ID
+	saturation     int
+	peerHash       [HashLen]byte
 }
 
 //RouteObserver observer interface for RouteItem

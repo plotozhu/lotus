@@ -74,11 +74,12 @@ type PingPongState struct {
 	state int
 }
 type PendingData struct {
-	Dst   peer.ID
-	Alpha uint8
-	OTtl  uint8
-	Data  []byte
-	Wait  chan error
+	Dst     peer.ID
+	Alpha   uint8
+	OTtl    uint8
+	Data    []byte
+	Wait    chan error
+	timeout time.Duration
 }
 type DataHandle func(data []byte)
 type FindRouteReq map[peer.ID]uint8
@@ -330,6 +331,7 @@ func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte, pInfo interface{
 
 	//update route table and process pending data if exists
 	//log.Infof("updateRoute,this:%v,dst:%v,next:%v,ttl:%v", tp.self, msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
+
 	tp.routeTab.UpdateRoute(msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
 	go tp.reponsePendingFindReq(msg.Src, lastHop, msg)
 	go tp.procPending(msg.Src)
@@ -644,7 +646,10 @@ func (tp *TransP2P) sendRouteDataToNearer(msg *MsgFindRoute) error {
 	myDist := util.Dist(tp.self, msg.Dst)
 
 	target := make([]*peer.ID, 0)
-	for i := 0; i < myDist; i++ {
+	//It is very important how to select pentential route node, i ascend from 0 to myDist can brings short hops, but more possible to fail,
+	// i descend from myDist-1 to 0 will improve possible of route and result long hops.
+	//TODO  use bucket to make more flexible
+	for i := myDist - 1; i >= 0; i-- {
 		val, ok := distsmap[i]
 		if ok {
 			target = append(target, val...)
@@ -674,13 +679,13 @@ func (tp *TransP2P) sendRouteDataToNearer(msg *MsgFindRoute) error {
 
 //SendData Send to find a route command, ttl is the max-hop for find data and alpha is fan-out, outbound is optional and should be less than 64 bytes
 // in the future, token should be provided
-func (tp *TransP2P) SendData(targetPeer peer.ID, ttl uint8, alpha uint8, data []byte, ret chan error) error {
+func (tp *TransP2P) SendData(targetPeer peer.ID, ttl uint8, alpha uint8, data []byte, timeout time.Duration, ret chan error) error {
 
 	if strings.Compare(string(targetPeer), string(tp.self)) == 0 {
 		return nil
 	}
 
-	pending := PendingData{Dst: targetPeer, Alpha: alpha, OTtl: ttl, Data: data, Wait: ret}
+	pending := PendingData{Dst: targetPeer, Alpha: alpha, OTtl: ttl, Data: data, Wait: ret, timeout: timeout}
 	go func() {
 		tp.dataChannel <- &pending
 	}()
@@ -700,7 +705,7 @@ func (tp *TransP2P) createAndRelay(pending *PendingData) error {
 		//Rpts []byte //used for token consume,current is nil
 	}
 	if pending.Wait != nil {
-		tp.waitingForResp.SetWithExpire(msg.Fd, pending.Wait, sendDataTimeout)
+		tp.waitingForResp.SetWithExpire(msg.Fd, pending.Wait, pending.timeout)
 	}
 	return tp.relayData(msg, true)
 

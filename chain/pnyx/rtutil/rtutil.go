@@ -4,6 +4,10 @@ import (
 	"github.com/libp2p/go-libp2p-core/peer"
 )
 
+const (
+	ADDR_LEN = 32
+)
+
 //Dist calculating distance for two address,  only first 64bit is calcucated
 //slow version to calculating distance
 func Dist(p1, p2 peer.ID) int {
@@ -11,7 +15,8 @@ func Dist(p1, p2 peer.ID) int {
 	numbytes2 := []byte(p2)[2:10]
 
 	leadZero := 0
-	for i := 0; i < 8; i++ {
+	bytes := ADDR_LEN / 8
+	for i := 0; i < bytes; i++ {
 		res := numbytes1[i] ^ numbytes2[i]
 		if res == 0 {
 			leadZero += 8
@@ -26,5 +31,5 @@ func Dist(p1, p2 peer.ID) int {
 			break
 		}
 	}
-	return 64 - leadZero
+	return ADDR_LEN - leadZero
 }

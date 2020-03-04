@@ -182,7 +182,7 @@ func TestConnection(t *testing.T) {
 
 	retChannel := make(chan error)
 	srvs[18].SetDataHandle(ProcessData)
-	srvs[1].SendData(peerInfos[18].ID, 20, 3, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], retChannel)
+	srvs[1].SendData(peerInfos[18].ID, 20, 4, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], 20*time.Second, retChannel)
 	result := <-retChannel
 	if result == nil {
 		t.Log("send OK")
