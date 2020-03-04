@@ -21,7 +21,7 @@ import (
 	"github.com/fxamacker/cbor"
 
 	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p-peer"
 	peerstore "github.com/libp2p/go-libp2p-peerstore"
 )
 
@@ -64,6 +64,7 @@ const (
 	statePonged             = 2
 	statePingReceived       = 3
 	sendDataTimeout         = 10 * time.Minute
+	HashLen                 = 32
 )
 
 type PingData struct {
@@ -82,15 +83,21 @@ type PendingData struct {
 	timeout time.Duration
 }
 type DataHandle func(data []byte)
+
+//FindRouteReq map[req_sender]ttl_value
 type FindRouteReq map[peer.ID]uint8
 
 //TransP2P
 type TransP2P struct {
 	ppSvr          *transpp.TransPushPullService
-	pendingCache   gcache.Cache //those waiting for routing
+	pendDataCache  gcache.Cache //those waiting for routing
 	self           peer.ID
 	pstore         peerstore.Peerstore
-	buckets        sync.Map
+	buckets        map[int](map[peer.ID]bool)
+	saturation     int
+	minBucketSize  int
+	bucketsLock    sync.Mutex
+	peerStoreHash  [HashLen]byte
 	dataChannel    chan *PendingData
 	pingChannel    chan *PingData
 	routeTab       RouteIntf
@@ -99,7 +106,7 @@ type TransP2P struct {
 	waitingForResp gcache.Cache
 	responsedCache gcache.Cache
 	handle         DataHandle
-	findRouteCahce gcache.Cache
+	findRouteCache gcache.Cache
 	pingpongCache  gcache.Cache
 
 	ctx          context.Context
@@ -142,18 +149,20 @@ func NewTransP2P(ctx context.Context, ahost host.Host, routeTab RouteIntf, handl
 	}
 	transInst := TransP2P{
 		ppSvr:          transpp.NewTransPushPullTransfer(ctx, ahost),
-		pendingCache:   gcache.New(maxPendDataCnt).LRU().Build(), // 128, 10*time.Minute),
+		pendDataCache:  gcache.New(maxPendDataCnt).LRU().Build(), // 128, 10*time.Minute),
 		self:           ahost.ID(),
 		pstore:         ahost.Peerstore(),
 		routeTab:       routeTab,
 		dataChannel:    make(chan *PendingData, maxSendingPacket),
 		pingChannel:    make(chan *PingData, maxSendingPacket),
 		responsedCache: gcache.New(maxResponsedCnt).LRU().Build(), // 128, 10*time.Minute),
-		findRouteCahce: gcache.New(maxFindCache).LRU().Build(),    // 128, 10*time.Minute),
+		findRouteCache: gcache.New(maxFindCache).LRU().Build(),    // 128, 10*time.Minute),
 		observers:      gcache.New(100).LRU().Build(),
 		currentFd:      0,
 		handle:         handle,
 		ctx:            ctx,
+		minBucketSize:  2,
+		saturation:     0,
 	}
 	transInst.waitingForResp = gcache.New(maxSendingPacket).LRU().EvictedFunc(transInst.onSendTimeout).Build()
 	transInst.pingpongCache = gcache.New(maxNeighbours).LRU().Build()
@@ -176,9 +185,69 @@ func (tp *TransP2P) run(ctx context.Context) {
 	}
 }
 
+func (tp *TransP2P) buildBucket() {
+	bytes, err := cbor.Marshal(tp.pstore.Peers(), cbor.EncOptions{})
+	if err != nil {
+
+		log.Errorf("%v error in creating hash ", tp.self)
+	}
+	hash := util.Hash(bytes)
+	tempHash := [HashLen]byte{}
+	copy(tempHash[:], hash[:32])
+	if tempHash == tp.peerStoreHash {
+		return
+	}
+	copy(tp.peerStoreHash[:], hash[:32])
+	tp.bucketsLock.Lock()
+	defer tp.bucketsLock.Unlock()
+	//reset tp.buckets
+	tp.buckets = make(map[int](map[peer.ID]bool))
+	for _, peerID := range tp.pstore.Peers() {
+		if strings.Compare(string(tp.self), string(peerID)) == 0 {
+			continue
+		}
+		dist := util.Dist(peerID, tp.self)
+		nodes := tp.buckets[dist]
+		if nodes == nil {
+			tp.buckets[dist] = make(map[peer.ID]bool)
+			tp.buckets[dist][peerID] = true
+		} else {
+			tp.buckets[dist][peerID] = true
+		}
+	}
+	pententialSat := 0
+	//calculate saturation
+	for i := 0; i < util.ADDR_LEN; i++ {
+		if len(tp.buckets[i]) >= tp.minBucketSize {
+			pententialSat = i
+		} else {
+			break
+		}
+	}
+	nodesAboveSat := 0
+	for i := pententialSat; i < util.ADDR_LEN; i++ {
+		nodesAboveSat += len(tp.buckets[i])
+		if nodesAboveSat >= tp.minBucketSize {
+			break
+		}
+	}
+	if nodesAboveSat < tp.minBucketSize {
+		if pententialSat > 0 {
+			pententialSat--
+		}
+	}
+	tp.saturation = pententialSat
+	log.Infof("%v create bucket ok with saturation:%v", tp.self, tp.saturation)
+}
+
 //SetDataHandle for this service
 func (tp *TransP2P) SetDataHandle(handle DataHandle) {
 	tp.handle = handle
+}
+
+//SetDataHandle for this service
+func (tp *TransP2P) SetMinBucketSize(size int) {
+	tp.minBucketSize = size
 }
 
 //RouteItemUpdated is called by routetab
@@ -322,6 +391,8 @@ func (tp *TransP2P) procPingPong(lastHop peer.ID, data []byte, pInfo interface{}
  */
 func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte, pInfo interface{}) error {
 	//	log.Infof("procRouteInfo my:%v, lastHop:%v\n", tp.self.Pretty(), lastHop.Pretty())
+	// ignore requirement if this is rewind
+
 	var msg = &MsgFindRoute{}
 	err := cbor.Unmarshal(data, msg)
 	if err != nil {
@@ -333,13 +404,13 @@ func (tp *TransP2P) procRouteInfo(lastHop peer.ID, data []byte, pInfo interface{
 	//log.Infof("updateRoute,this:%v,dst:%v,next:%v,ttl:%v", tp.self, msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
 
 	tp.routeTab.UpdateRoute(msg.Src, lastHop, msg.OTtl-msg.Ttl+1)
-	go tp.reponsePendingFindReq(msg.Src, lastHop, msg)
+	go tp.reponsePendingFindReq(lastHop, msg)
 	go tp.procPending(msg.Src)
 	switch msg.Cmd {
 	case cmdFind:
 		return tp.procFindReq(lastHop, msg)
 	case cmdFindResp:
-		return tp.procFindResp(msg)
+		return tp.procFindResp(lastHop, msg)
 	}
 	log.Errorf("cmd not exist:%v", msg.Cmd)
 	return fmt.Errorf("cmd not exist:%v", msg.Cmd)
@@ -367,27 +438,27 @@ func (tp *TransP2P) procDataArrival(lastHop peer.ID, data []byte, pInfo interfac
 
 }
 
-//
-func (tp *TransP2P) reponsePendingFindReq(dst peer.ID, nextHop peer.ID, rawMsg *MsgFindRoute) {
-	pendingItem, err := tp.findRouteCahce.Get(dst)
+//for those who asked us to find route and waiting for response
+func (tp *TransP2P) reponsePendingFindReq(nextHop peer.ID, rawMsg *MsgFindRoute) {
+	pendingItem, err := tp.findRouteCache.Get(rawMsg.Src)
 	if err == nil {
-		for src, _ := range *pendingItem.(*FindRouteReq) {
+		for reqSender, _ := range pendingItem.(FindRouteReq) {
 			msg := MsgFindRoute{
 				Cmd:   cmdFindResp,
-				Dst:   src,
-				Src:   dst,
+				Dst:   rawMsg.Src,
+				Src:   rawMsg.Dst,
 				Alpha: alpha,
 				OTtl:  rawMsg.OTtl,
 				Ttl:   rawMsg.Ttl - 1,
 			}
 			data, err := cbor.Marshal(&msg, cbor.EncOptions{})
 			if err == nil {
-				tp.ppSvr.SendToPeer(src, handleRoute, data)
+				tp.ppSvr.SendToPeer(reqSender, handleRoute, data)
 			}
 		}
 	}
 }
-func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
+func (tp *TransP2P) procFindReq(lastHop peer.ID, msg *MsgFindRoute) error {
 	//route is updated before calling this
 	//I am the destination, send findResp
 	if strings.Compare(string(msg.Dst), string(tp.self)) == 0 {
@@ -405,7 +476,7 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 		if err != nil {
 			return err
 		}
-		tp.ppSvr.SendToPeer(src, handleRoute, data)
+		tp.ppSvr.SendToPeer(lastHop, handleRoute, data)
 		return nil
 	}
 	//try to find a valid one from routeTab,
@@ -421,17 +492,17 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 		}
 		data, err := cbor.Marshal(&msg, cbor.EncOptions{})
 		if err == nil {
-			tp.ppSvr.SendToPeer(src, handleRoute, data)
+			tp.ppSvr.SendToPeer(lastHop, handleRoute, data)
 			return nil
 		}
 
 	}
 	//record this find request
-	request, err := tp.findRouteCahce.Get(msg.Dst)
+	request, err := tp.findRouteCache.Get(msg.Dst)
 	if err == nil {
-		result := request.(*FindRouteReq)
-		(*result)[msg.Src] = (msg.OTtl - msg.Ttl - 1)
-		tp.findRouteCahce.SetWithExpire(msg.Dst, result, 5*time.Minute)
+		result := request.(FindRouteReq)
+		(result)[lastHop] = (msg.OTtl - msg.Ttl - 1)
+		tp.findRouteCache.SetWithExpire(msg.Dst, result, 5*time.Minute)
 		return nil
 
 	}
@@ -440,14 +511,14 @@ func (tp *TransP2P) procFindReq(src peer.ID, msg *MsgFindRoute) error {
 	if msg.Ttl > 0 {
 		msg.Ttl--
 		pendingReq := make(FindRouteReq)
-		pendingReq[msg.Src] = (msg.OTtl - msg.Ttl)
-		tp.findRouteCahce.SetWithExpire(msg.Dst, &pendingReq, 5*time.Minute)
+		pendingReq[lastHop] = (msg.OTtl - msg.Ttl)
+		tp.findRouteCache.SetWithExpire(msg.Dst, pendingReq, 5*time.Minute)
 		return tp.sendRouteDataToNearer(msg)
 	}
 	return fmt.Errorf("ttl out")
 
 }
-func (tp *TransP2P) procFindResp(msg *MsgFindRoute) error {
+func (tp *TransP2P) procFindResp(lastHop peer.ID, msg *MsgFindRoute) error {
 	//neighbour route is updated before calling this
 	// I am the destination
 	if strings.Compare(string(msg.Dst), string(tp.self)) == 0 {
@@ -532,7 +603,7 @@ func (tp *TransP2P) procPending(dst peer.ID) {
 	tp.lock.Lock()
 	defer tp.lock.Unlock()
 	//	log.Infof("%v try to retract  relaying data:%v", tp.self, dst)
-	pendings, ok := tp.pendingCache.Get(dst)
+	pendings, ok := tp.pendDataCache.Get(dst)
 	if ok == nil {
 
 		//	log.Infof("Data extracted")
@@ -540,7 +611,7 @@ func (tp *TransP2P) procPending(dst peer.ID) {
 		for _, msg := range result {
 			tp.relayData(msg, false)
 		}
-		tp.pendingCache.Remove(dst)
+		tp.pendDataCache.Remove(dst)
 
 	}
 }
@@ -557,7 +628,7 @@ func (tp *TransP2P) relayData(msg *MsgDataTrans, autoFind bool) error {
 		//now simple discard message
 		if autoFind {
 
-			tp.pendingCache.SetWithExpire(msg.Dst, []*MsgDataTrans{msg}, sendDataTimeout)
+			tp.pendDataCache.SetWithExpire(msg.Dst, []*MsgDataTrans{msg}, sendDataTimeout)
 			tp.FindRoute(msg.Dst, msg.Ttl, alpha, nil)
 			log.Infof("%v pending  relaying data:%v", tp.self, msg.Dst)
 		} else {
@@ -604,6 +675,7 @@ type DistInfo struct {
 // in the future, token should be provided
 func (tp *TransP2P) FindRoute(targetPeer peer.ID, ttl uint8, alpha uint8, outbound []byte) error {
 
+	log.Infof("%v Find route %v", tp.self, targetPeer)
 	if strings.Compare(string(targetPeer), string(tp.self)) == 0 {
 		return nil
 	}
@@ -624,46 +696,42 @@ func (tp *TransP2P) sendRouteDataToNearer(msg *MsgFindRoute) error {
 
 	//Get \alpha nearer peerid and send data to
 	//this is with very low effiecny and only used for evaluation ,a tree should be  used to find nodes as fast as possible
-	distsmap := make(map[int][]*peer.ID)
-	for _, peerID := range tp.pstore.Peers() {
 
-		if strings.Compare(string(peerID), string(tp.self)) != 0 {
-			dist := util.Dist(peerID, msg.Dst)
-
-			val, ok := distsmap[dist]
-			bakID, err := peer.IDHexDecode(peer.IDHexEncode(peerID))
-			if err != nil {
-				log.Errorf("\n Failed to get id:%v", err)
-			}
-			if ok {
-				distsmap[dist] = append(val, &bakID)
-			} else {
-				distsmap[dist] = append([]*peer.ID{}, &bakID)
-			}
-		}
-
-	}
-	myDist := util.Dist(tp.self, msg.Dst)
-
+	tp.buildBucket()
 	target := make([]*peer.ID, 0)
-	//It is very important how to select pentential route node, i ascend from 0 to myDist can brings short hops, but more possible to fail,
-	// i descend from myDist-1 to 0 will improve possible of route and result long hops.
-	//TODO  use bucket to make more flexible
-	for i := myDist - 1; i >= 0; i-- {
-		val, ok := distsmap[i]
-		if ok {
-			target = append(target, val...)
 
-			if len(target) >= int(alpha) {
-				break
+	bucketIndex := util.Dist(tp.self, msg.Dst)
+	log.Infof("target %v in %v's bucket %v", peer.IDHexEncode(msg.Dst), peer.IDHexEncode(tp.self), bucketIndex)
+	tp.bucketsLock.Lock()
+	ignoredPeersIntf, getPendErr := tp.findRouteCache.Get(msg.Dst)
+	var ignoredPeers = make(FindRouteReq)
+	if getPendErr == nil {
+		ignoredPeers = ignoredPeersIntf.(FindRouteReq)
+	}
+
+	defer tp.bucketsLock.Lock()
+	if bucketIndex < tp.saturation {
+		for key, _ := range tp.buckets[bucketIndex] {
+
+			_, exists := (ignoredPeers)[key]
+			if !exists {
+				target = append(target, &key)
+			}
+		}
+	} else {
+		for i := tp.saturation; i < util.ADDR_LEN; i++ {
+			for key, _ := range tp.buckets[i] {
+				_, exists := (ignoredPeers)[key]
+				if !exists {
+					newkey, _ := peer.IDHexDecode(peer.IDHexEncode(key))
+					target = append(target, &newkey)
+				}
 			}
 		}
 	}
-
 	if len(target) > int(alpha) {
-		target = target[0:alpha]
+		target = target[:alpha]
 	}
-
 	data, err := cbor.Marshal(msg, cbor.EncOptions{})
 	if err != nil {
 		return err

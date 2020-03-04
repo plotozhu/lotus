@@ -2,6 +2,7 @@ package rtutil
 
 import (
 	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/minio/blake2b-simd"
 )
 
 const (
@@ -31,5 +32,9 @@ func Dist(p1, p2 peer.ID) int {
 			break
 		}
 	}
-	return ADDR_LEN - leadZero
+	return leadZero
+}
+func Hash(b []byte) []byte {
+	s := blake2b.Sum256(b)
+	return s[:]
 }

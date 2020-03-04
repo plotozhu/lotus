@@ -14,7 +14,6 @@ const (
 	maxRouteItems  int   = 1024 * 128
 	expireTime           = time.Hour
 	fastExpireTime       = 10 * time.Minute
-	HashLen              = 32
 )
 
 type RouteTableItem struct {

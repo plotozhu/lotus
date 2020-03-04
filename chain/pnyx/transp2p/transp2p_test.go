@@ -89,7 +89,7 @@ func ProcessData(data []byte) {
 }
 func TestConnection(t *testing.T) {
 
-	addrsCnt := 40
+	addrsCnt := 30
 	var nodes SortableHosts
 
 	addrs := createnodes(addrsCnt)
@@ -129,7 +129,7 @@ func TestConnection(t *testing.T) {
 	sort.Sort(peerInfos)
 	sort.Sort(nodes)
 	for i, peerInfo := range peerInfos {
-		fmt.Printf("%v：%v\n", i, peerInfo.ID.Pretty())
+		fmt.Printf("%v：%v\n", i, peer.IDHexEncode(peerInfo.ID))
 	}
 	srvs := make([]*TransP2P, 0)
 	obs := make([]*MyObserver, 0)
@@ -167,11 +167,11 @@ func TestConnection(t *testing.T) {
 
 	}
 	fmt.Print("\n")
-	go srvs[0].FindRoute(peerInfos[19].ID, 20, 3, nil)
+	go srvs[0].FindRoute(peerInfos[19].ID, 20, 5, nil)
 	//ret := make(chan error)
 
 	go func() {
-		<-time.NewTimer(5 * time.Second).C
+		<-time.NewTimer(15 * time.Second).C
 		fmt.Print("\n")
 		for i, observer := range obs {
 			fmt.Printf("------------- routetab of %v:%v------------\n", observer.GetID(), peerInfos[i].ID.Pretty())
@@ -182,7 +182,7 @@ func TestConnection(t *testing.T) {
 
 	retChannel := make(chan error)
 	srvs[18].SetDataHandle(ProcessData)
-	srvs[1].SendData(peerInfos[18].ID, 20, 4, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], 20*time.Second, retChannel)
+	srvs[1].SendData(peerInfos[18].ID, 20, 5, ([]byte{0x01, 0x02, 0x03, 0x04, 0x05})[:], 120*time.Second, retChannel)
 	result := <-retChannel
 	if result == nil {
 		t.Log("send OK")
